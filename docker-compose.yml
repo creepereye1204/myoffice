@@ -1,0 +1,51 @@
+# rhwp office — 웹 워드/엑셀/파워포인트 + 한글(HWP)
+#   www.myoffice.p-e.kr → web (프론트 + /rhwp/ HWP 편집기 + /office/ ONLYOFFICE 프록시)
+#   api.myoffice.p-e.kr → api (파일 저장/ONLYOFFICE 콜백)
+# 호스트 포트는 열지 않는다 — HAProxy가 rhwp_default 네트워크로 컨테이너에 직접 닿는다.
+name: rhwp
+
+services:
+  web:
+    build: ./frontend
+    container_name: rhwp-web
+    restart: unless-stopped
+    depends_on: [api, onlyoffice]
+
+  api:
+    build: ./api
+    container_name: rhwp-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      DS_INTERNAL_URL: http://onlyoffice/
+      API_INTERNAL_URL: http://api:8000
+      CORS_ORIGINS: https://www.myoffice.p-e.kr,https://www.rhwp.p-e.kr
+      MAX_FILE_MB: "50"
+      MAX_WORKSPACE_MB: "500"
+    volumes:
+      - ./data:/data
+
+  onlyoffice:
+    build: ./onlyoffice
+    image: rhwp-onlyoffice:9.2
+    container_name: rhwp-onlyoffice
+    restart: unless-stopped
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_HEADER: Authorization
+      JWT_IN_BODY: "true"
+      # API 컨테이너(도커 내부 IP)에서 문서를 받아오고 콜백을 보내야 하므로 허용
+      ALLOW_PRIVATE_IP_ADDRESS: "true"
+    volumes:
+      - oo_data:/var/www/onlyoffice/Data
+      - oo_logs:/var/log/onlyoffice
+      - oo_cache:/var/lib/onlyoffice
+      - oo_db:/var/lib/postgresql
+
+volumes:
+  oo_data:
+  oo_logs:
+  oo_cache:
+  oo_db:

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>알오피스 — 웹 워드·엑셀·파워포인트·한글·한셀·한쇼</title>
+  <meta name="description" content="브라우저에서 바로 쓰는 워드, 엑셀, 파워포인트, 한글, 한셀, 한쇼 편집기" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="28" height="28" />
+      <span>알오피스</span>
+    </a>
+    <div class="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 0 4.2 12.6l4.1 4.1 1.4-1.4-4.1-4.1A7 7 0 0 0 11 4Zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10Z"/></svg>
+      <input id="q" type="search" placeholder="파일 검색" autocomplete="off" />
+    </div>
+    <button class="icon-btn" id="ws-btn" title="작업공간 열쇠" aria-label="작업공간 열쇠">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm5.6-4A6 6 0 1 0 12.6 14H16v3h3v-3h2v-4h-8.4Z"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <section class="new">
+      <h2>새로 만들기</h2>
+      <div class="new-group">
+        <h3>Microsoft Office</h3>
+        <div class="new-grid">
+          <button class="new-card" data-type="docx" style="--c:var(--word)">
+            <span class="doc"><b>W</b></span><span class="t">워드</span><span class="s">.docx</span>
+          </button>
+          <button class="new-card" data-type="xlsx" style="--c:var(--cell)">
+            <span class="doc"><b>X</b></span><span class="t">엑셀</span><span class="s">.xlsx</span>
+          </button>
+          <button class="new-card" data-type="pptx" style="--c:var(--slide)">
+            <span class="doc"><b>P</b></span><span class="t">파워포인트</span><span class="s">.pptx</span>
+          </button>
+        </div>
+      </div>
+      <div class="new-group">
+        <h3>한컴오피스</h3>
+        <div class="new-grid">
+          <button class="new-card" data-type="hwp" style="--c:var(--hwp)">
+            <span class="doc"><b>한</b></span><span class="t">한글</span><span class="s">.hwp</span>
+          </button>
+          <button class="new-card" data-type="hcell" style="--c:var(--hcell)">
+            <span class="doc"><b>셀</b></span><span class="t">한셀</span><span class="s">.xlsx · 한셀에서 바로 열림</span>
+          </button>
+          <button class="new-card" data-type="hshow" style="--c:var(--hshow)">
+            <span class="doc"><b>쇼</b></span><span class="t">한쇼</span><span class="s">.pptx · 한쇼에서 바로 열림</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="files">
+      <div class="files-head">
+        <h2>내 파일</h2>
+        <nav class="tabs" role="tablist">
+          <button class="on" data-f="all">전체</button>
+          <button data-f="word">워드</button>
+          <button data-f="cell">엑셀</button>
+          <button data-f="slide">파워포인트</button>
+          <button data-f="hwp">한글</button>
+          <button data-f="hcell">한셀</button>
+          <button data-f="hshow">한쇼</button>
+        </nav>
+        <label class="btn primary upload">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 16V7.8l-3.3 3.3-1.4-1.4L12 4l5.7 5.7-1.4 1.4L13 7.8V16h-2Zm-6 4v-5h2v3h10v-3h2v5H5Z"/></svg>
+          업로드
+          <input id="file-input" type="file" multiple hidden
+            accept=".docx,.doc,.odt,.rtf,.txt,.xlsx,.xls,.ods,.csv,.pptx,.ppt,.odp,.hwp,.hwpx,.pdf" />
+        </label>
+      </div>
+
+      <div id="drop" class="drop">
+        <p><strong>파일을 여기로 끌어다 놓으세요</strong><br />
+          docx · xlsx · pptx · hwp · hwpx · pdf 등 (최대 50MB)</p>
+      </div>
+
+      <ul id="list" class="list" aria-live="polite"></ul>
+      <p id="empty" class="empty" hidden>아직 파일이 없습니다. 새로 만들거나 파일을 올려 보세요.</p>
+      <p id="usage" class="usage"></p>
+    </section>
+  </main>
+
+  <dialog id="ws-dialog">
+    <form method="dialog">
+      <h3>작업공간 열쇠</h3>
+      <p>로그인 없이 이 브라우저에 파일이 묶여 있습니다. 아래 열쇠를 다른 기기에 붙여 넣으면 같은 파일을 볼 수 있습니다. <strong>열쇠를 아는 사람은 누구나 파일에 접근할 수 있으니</strong> 공유에 주의하세요.</p>
+      <div class="keyrow">
+        <input id="ws-key" readonly />
+        <button type="button" class="btn" id="ws-copy">복사</button>
+      </div>
+      <label class="lbl" for="ws-new">다른 열쇠로 전환</label>
+      <input id="ws-new" placeholder="열쇠 붙여넣기" autocomplete="off" />
+      <div class="actions">
+        <button value="cancel" class="btn">닫기</button>
+        <button type="button" class="btn primary" id="ws-apply">전환</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/home.js"></script>
+</body>
+</html>

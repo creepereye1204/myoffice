@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>편집 — 알오피스</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body class="editor-page">
+  <header class="edbar">
+    <a class="icon-btn" href="/" title="내 파일로" aria-label="내 파일로">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 5.4 14 4l-8 8 8 8 1.4-1.4L8.8 12l6.6-6.6Z"/></svg>
+    </a>
+    <span id="ficon"></span>
+    <input id="title" class="title-input" spellcheck="false" aria-label="파일 이름" />
+    <span id="status" class="status"></span>
+    <div class="grow"></div>
+    <div id="hwp-tools" hidden>
+      <button class="btn primary" id="save">저장</button>
+    </div>
+    <button class="icon-btn" id="dl" title="다운로드" aria-label="다운로드">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3V4ZM5 18h14v2H5v-2Z"/></svg>
+    </button>
+  </header>
+  <div id="stage" class="stage">
+    <div id="loading" class="loading"><span class="spinner"></span><span id="loading-msg">문서를 여는 중…</span></div>
+    <div id="oo-holder"><div id="oo"></div></div>
+    <div id="hwp"></div>
+  </div>
+  <script type="module" src="/edit.js"></script>
+</body>
+</html>
