@@ -38,6 +38,7 @@ services:
       JWT_IN_BODY: "true"
       # API 컨테이너(도커 내부 IP)에서 문서를 받아오고 콜백을 보내야 하므로 허용
       ALLOW_PRIVATE_IP_ADDRESS: "true"
+      # 참고: Community 판은 변환기(x2t) 워커가 1개라 문서 열기·PDF 변환이 한 줄로 처리된다 (작은 문서 ~1초).
     volumes:
       - oo_data:/var/www/onlyoffice/Data
       - oo_logs:/var/log/onlyoffice

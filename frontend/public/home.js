@@ -1,8 +1,10 @@
-import { api, download, fileIcon, toast, esc, fmtSize, fmtTime, getWorkspace, setWorkspace, TYPE_INFO, kindOf } from './common.js';
+import { api, download, exportAs, fileIcon, toast, esc, fmtSize, fmtTime, TYPE_INFO, kindOf, requireLogin, setSession, getToken, logout } from './common.js';
 
 const $ = (s) => document.querySelector(s);
 let files = [];
 let filter = 'all';
+let scope = 'mine';
+let me;
 
 const CONVERT = {
   word: [['pdf', 'PDF'], ['docx', 'Word (.docx)']],
@@ -11,6 +13,7 @@ const CONVERT = {
   hwp: [['docx', 'Word (.docx)'], ['pdf', 'PDF']],
   pdf: [['docx', 'Word (.docx)']],
 };
+const ROLE = { edit: '편집 가능', view: '보기만' };
 
 function openFile(id) { location.href = `/edit?id=${id}`; }
 
@@ -22,8 +25,8 @@ function render() {
       <button class="open" data-act="open" title="열기">
         ${fileIcon(kindOf(f), f.ext)}
         <span class="meta">
-          <span class="name">${esc(f.name)}</span>
-          <span class="sub">${TYPE_INFO[kindOf(f)]?.label || ''} · ${fmtSize(f.size)} · ${fmtTime(f.modified)}${f.editable ? '' : ' · 보기 전용'}</span>
+          <span class="name">${esc(f.name)}${f.shared ? ' <span class="badge">공유 중</span>' : ''}${f.role ? ` <span class="badge">${ROLE[f.role]}</span>` : ''}</span>
+          <span class="sub">${f.owner ? `${esc(f.owner)} · ` : ''}${TYPE_INFO[kindOf(f)]?.label || ''} · ${fmtSize(f.size)} · ${fmtTime(f.modified)}${f.editable ? '' : ' · 보기 전용'}</span>
         </span>
       </button>
       <div class="row-actions">
@@ -32,15 +35,19 @@ function render() {
       </div>
     </li>`).join('');
   $('#empty').hidden = shown.length > 0;
-  $('#empty').textContent = files.length ? '조건에 맞는 파일이 없습니다.' : '아직 파일이 없습니다. 새로 만들거나 파일을 올려 보세요.';
+  $('#empty').textContent = files.length ? '조건에 맞는 파일이 없습니다.'
+    : scope === 'shared' ? '아직 공유받은 파일이 없습니다. 다른 사람이 내 아이디로 공유하면 여기에 나타납니다.'
+    : '아직 파일이 없습니다. 새로 만들거나 파일을 올려 보세요.';
 }
 
 async function load() {
   try {
-    [files] = await Promise.all([api('/api/files')]);
+    files = await api(scope === 'shared' ? '/api/shared-with-me' : '/api/files');
     render();
-    const u = await api('/api/workspaces/me');
-    $('#usage').textContent = `사용량 ${fmtSize(u.used)} / ${fmtSize(u.quota)} · 파일 ${u.files}개`;
+    if (scope === 'mine') {
+      const u = await api('/api/workspaces/me');
+      $('#usage').textContent = `사용량 ${fmtSize(u.used)} / ${fmtSize(u.quota)} · 파일 ${u.files}개`;
+    } else $('#usage').textContent = '';
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -62,7 +69,7 @@ async function upload(list) {
     try { await api('/api/files/upload', { method: 'POST', body: fd }); toast(`${file.name} 업로드 완료`, 'ok'); }
     catch (e) { toast(`${file.name}: ${e.message}`, 'err'); }
   }
-  load();
+  if (scope !== 'mine') setScope('mine'); else load();
 }
 $('#file-input').addEventListener('change', (e) => { upload([...e.target.files]); e.target.value = ''; });
 let dragDepth = 0;
@@ -75,8 +82,8 @@ window.addEventListener('drop', (e) => {
 });
 
 // ---- 목록 동작
-function closeMenu() { document.querySelector('.menu')?.remove(); }
-document.addEventListener('click', (e) => { if (!e.target.closest('.menu, [data-act="menu"]')) closeMenu(); });
+function closeMenus() { document.querySelectorAll('.menu.floating').forEach((m) => m.remove()); $('#account-menu').hidden = true; }
+document.addEventListener('click', (e) => { if (!e.target.closest('.menu, [data-act="menu"], #account-btn')) closeMenus(); });
 
 $('#list').addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-act]');
@@ -87,14 +94,16 @@ $('#list').addEventListener('click', async (e) => {
   if (act === 'open') return openFile(id);
   if (act === 'download') return download(id).catch((er) => toast(er.message, 'err'));
   if (act === 'menu') {
-    closeMenu();
+    closeMenus();
+    const owner = scope === 'mine';
     const m = document.createElement('div');
-    m.className = 'menu';
+    m.className = 'menu floating';
     m.innerHTML = `
       <button data-m="open">열기</button>
-      <button data-m="rename">이름 바꾸기</button>
-      ${(CONVERT[f.type] || []).filter(([t]) => t !== f.ext).map(([t, l]) => `<button data-m="conv" data-to="${t}">${l}로 변환</button>`).join('')}
-      <hr /><button data-m="delete" class="danger">삭제</button>`;
+      ${f.ext !== 'pdf' ? '<button data-m="pdf">PDF로 다운로드</button>' : ''}
+      ${owner ? '<button data-m="rename">이름 바꾸기</button>' : ''}
+      ${owner ? (CONVERT[f.type] || []).filter(([t]) => t !== f.ext).map(([t, l]) => `<button data-m="conv" data-to="${t}">${l} 사본 만들기</button>`).join('') : ''}
+      ${owner ? '<hr /><button data-m="delete" class="danger">삭제</button>' : ''}`;
     document.body.appendChild(m);
     const r = btn.getBoundingClientRect();
     m.style.top = `${r.bottom + window.scrollY + 4}px`;
@@ -102,9 +111,10 @@ $('#list').addEventListener('click', async (e) => {
     m.addEventListener('click', async (ev) => {
       const it = ev.target.closest('[data-m]');
       if (!it) return;
-      closeMenu();
+      closeMenus();
       try {
         if (it.dataset.m === 'open') openFile(id);
+        if (it.dataset.m === 'pdf') { toast('PDF 만드는 중…'); await exportAs(id, 'pdf'); }
         if (it.dataset.m === 'rename') {
           const base = f.name.replace(/\.[^.]+$/, '');
           const n = prompt('새 이름', base);
@@ -125,20 +135,79 @@ $('#list').addEventListener('click', async (e) => {
   }
 });
 
-// ---- 필터/검색
+// ---- 범위/필터/검색
+function setScope(s) {
+  scope = s;
+  document.querySelectorAll('[data-scope]').forEach((x) => x.classList.toggle('on', x.dataset.scope === s));
+  files = []; render(); load();
+}
+document.querySelectorAll('[data-scope]').forEach((b) => b.addEventListener('click', () => setScope(b.dataset.scope)));
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
   document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('on', x === b));
   filter = b.dataset.f; render();
 }));
 $('#q').addEventListener('input', render);
 
-// ---- 작업공간 열쇠
-$('#ws-btn').addEventListener('click', () => { $('#ws-key').value = getWorkspace() || ''; $('#ws-new').value = ''; $('#ws-dialog').showModal(); });
-$('#ws-copy').addEventListener('click', async () => { await navigator.clipboard.writeText($('#ws-key').value); toast('복사했습니다', 'ok'); });
-$('#ws-apply').addEventListener('click', () => {
-  const v = $('#ws-new').value.trim();
-  if (!/^[A-Za-z0-9_-]{32,64}$/.test(v)) return toast('올바른 열쇠가 아닙니다', 'err');
-  setWorkspace(v); $('#ws-dialog').close(); load();
+// ---- 계정 메뉴
+function showMe() {
+  $('#me-name').textContent = me.name;
+  $('#me-avatar').textContent = [...me.name].slice(0, /^[가-힣]/.test(me.name) ? 2 : 1).join('').toUpperCase();
+  $('#me-id').textContent = `@${me.username}`;
+  $('#admin-link').hidden = !me.isAdmin;
+}
+$('#account-btn').addEventListener('click', () => { const m = $('#account-menu'); m.hidden = !m.hidden; });
+$('#account-menu').addEventListener('click', async (e) => {
+  const a = e.target.closest('[data-a]')?.dataset.a;
+  if (!a) return;
+  $('#account-menu').hidden = true;
+  if (a === 'logout') return logout();
+  if (a === 'password') { $('#pw-form').reset(); $('#pw-dialog').showModal(); }
+  if (a === 'name') {
+    const n = prompt('새 이름 (함께 편집할 때 보입니다)', me.name);
+    if (n && n.trim() && n !== me.name) {
+      try { me = await api('/api/auth/me', { method: 'PATCH', body: { name: n } }); setSession(getToken(), me); showMe(); toast('이름을 바꿨습니다', 'ok'); }
+      catch (er) { toast(er.message, 'err'); }
+    }
+  }
+});
+$('#pw-dialog').addEventListener('close', async () => {
+  if ($('#pw-dialog').returnValue !== 'ok') return;
+  try {
+    const { token } = await api('/api/auth/password', { method: 'POST', body: { old: $('#pw-old').value, new: $('#pw-new').value } });
+    setSession(token, me);
+    toast('비밀번호를 바꿨습니다. 다른 기기는 로그아웃됩니다', 'ok');
+  } catch (er) { toast(er.message, 'err'); }
 });
 
-window.addEventListener('pageshow', load);
+// 편집기 파일 미리 받기 (유휴 시간에) — 처음 여는 속도 개선
+const HWP_FONTS = [
+  '/rhwp/ext-fonts/gh/projectnoonnu/noonfonts_2104@1.0/HANBatang.woff2',
+  '/rhwp/ext-fonts/gh/projectnoonnu/noonfonts_four@1.0/HCRDotum.woff2',
+  '/rhwp/fonts/RHWPOldHangul-Regular.woff2',
+  '/rhwp/fonts/NotoSansKR-Bold.woff2', '/rhwp/fonts/NotoSerifKR-Bold.woff2',
+  '/rhwp/fonts/NotoSerifKR-Regular.woff2', '/rhwp/fonts/NotoSansKR-ExtraLight.woff2',
+];
+function prefetch(href, as) {
+  if (document.querySelector(`link[href="${href}"]`)) return;
+  const l = document.createElement('link'); l.rel = 'prefetch'; l.href = href; if (as) l.as = as;
+  document.head.appendChild(l);
+}
+async function warmEditors() {
+  if (navigator.connection?.saveData) return;
+  prefetch('/office/web-apps/apps/api/documents/api.js', 'script');
+  try {
+    const html = await (await fetch('/rhwp/index.html')).text();
+    for (const m of html.matchAll(/(?:src|href)="(\/rhwp\/assets\/[^"]+)"/g)) prefetch(m[1]);
+    prefetch('/rhwp/assets/rhwp_bg-CjDYAjgF.wasm');
+    // 한글 문서가 거의 항상 쓰는 글꼴 (함초롬, Noto) — 한 번 받으면 1년 캐시
+    for (const f of HWP_FONTS) prefetch(f);
+  } catch {}
+}
+
+(async () => {
+  me = await requireLogin();
+  showMe();
+  load();
+  window.addEventListener('pageshow', (e) => { if (e.persisted) load(); });
+  (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(warmEditors);
+})();

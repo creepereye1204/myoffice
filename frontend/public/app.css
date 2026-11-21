@@ -32,6 +32,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--bg); color: var(--text);
@@ -182,3 +183,75 @@ dialog input { width: 100%; padding: 9px 12px; border: 1px solid var(--line); bo
   .title-input { width: auto; flex: 1; max-width: none; }
   .status { display: none; }
 }
+
+/* ---------- 공동 편집 */
+.badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; vertical-align: 2px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.people { display: flex; align-items: center; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; border: 2px solid var(--surface); margin-left: -6px; background: var(--c); cursor: default; position: relative; }
+.avatar:first-child { margin-left: 0; }
+.avatar.lock::after { content: "✎"; position: absolute; right: -4px; bottom: -4px; width: 15px; height: 15px; border-radius: 50%; background: var(--surface); color: var(--text); font-size: 10px; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--line); }
+.avatar.me { cursor: pointer; }
+.banner { display: flex; align-items: center; gap: 12px; padding: 8px 16px; font-size: 14px; background: color-mix(in srgb, #f59e0b 16%, var(--surface)); border-bottom: 1px solid var(--line); }
+.banner[hidden] { display: none; }
+.banner .grow { flex: 1; }
+.conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.conn.on { background: var(--ok); }
+.loading .bar { width: 220px; height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.loading .bar i { display: block; width: 40%; height: 100%; background: var(--accent); border-radius: 4px; animation: slide 1.1s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; margin-bottom: 14px; }
+.seg button { border: 0; background: transparent; padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: 14px; }
+.seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.danger-link { background: none; border: 0; color: var(--danger); cursor: pointer; padding: 0; font-size: 14px; }
+@media (max-width: 760px) { .people .avatar:nth-child(n+4) { display: none; } #share span { display: none; } }
+
+/* ---------- 계정 / 로그인 / 공유 */
+.account { position: relative; }
+.account-btn { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 4px 8px 4px 4px; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 14px; }
+.account-btn:hover { background: var(--hover); }
+.avatar.small { width: 28px; height: 28px; margin: 0; font-size: 11px; border: 0; background: var(--c, var(--accent)); }
+.account-menu { position: absolute; right: 0; top: calc(100% + 6px); }
+.account-menu a { display: block; padding: 8px 12px; border-radius: 6px; color: var(--text); text-decoration: none; font-size: 14px; }
+.account-menu a:hover { background: var(--hover); }
+.menu-head { padding: 6px 12px 8px; color: var(--muted); font-size: 13px; }
+.files-head .scope { margin: 0; }
+.auth-page { min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; }
+.auth { width: min(400px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 32px 28px; box-shadow: var(--shadow); }
+.auth .brand { justify-content: center; font-size: 22px; }
+.auth-sub { text-align: center; color: var(--muted); font-size: 14px; margin: 6px 0 22px; }
+.auth-tabs { display: flex; width: 100%; }
+.auth-tabs button { flex: 1; }
+.auth-form { display: grid; gap: 14px; }
+.auth-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
+.auth-form input { padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; font-weight: 400; }
+.auth-form input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.auth-form small { color: var(--muted); font-weight: 400; }
+.btn.wide { width: 100%; justify-content: center; padding: 11px; margin-top: 4px; }
+.auth-err { color: var(--danger); font-size: 14px; min-height: 1.5em; margin: 12px 0 0; text-align: center; }
+.auth-note { color: var(--muted); text-align: center; }
+#share-dialog { width: min(520px, calc(100vw - 32px)); }
+#share-dialog h4 { margin: 18px 0 8px; font-size: 14px; }
+#share-dialog .hint { margin: 0 0 8px; }
+.grant-add { display: flex; gap: 6px; }
+.grant-add input { flex: 1; font: inherit; }
+dialog select { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 14px; }
+.grant-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; max-height: 220px; overflow: auto; }
+.grant-list li { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.grant-list li.none { color: var(--muted); }
+.grant-list .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grant-list small { color: var(--muted); }
+/* 관리자 */
+.admin-table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; font-size: 14px; }
+.admin-table th, .admin-table td { padding: 10px 12px; border-top: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.admin-table th { border-top: 0; color: var(--muted); font-weight: 600; font-size: 13px; background: var(--hover); }
+.admin-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.table-wrap { overflow-x: auto; }
+.switch { display: flex; align-items: center; gap: 10px; font-size: 14px; margin-bottom: 16px; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--hover); }
+.tag.admin { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.tag.off { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+@media (max-width: 760px) { #me-name { display: none; } #pdf { display: none; } }
+/* 상단바: 검색창이 줄어들 수 있어야 계정 버튼이 화면 밖으로 안 밀린다 */
+.search { min-width: 0; }
+.account { flex: none; }
+@media (max-width: 760px) { .search { margin: 0; } .account-btn svg { display: none; } }

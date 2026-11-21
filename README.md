@@ -9,13 +9,34 @@
 - https://api.myoffice.p-e.kr — API (`rhwp-api`, FastAPI)
 - `rhwp-onlyoffice` — ONLYOFFICE 9.2 + 나눔/Noto CJK 글꼴, JWT 사용
 
+## 기능
+- 새로 만들기: 워드·엑셀·파워포인트 (MS Office), 한글·한셀·한쇼 (한컴오피스 — 한셀/한쇼는 xlsx/pptx로 만들어 한셀·한쇼에서 바로 열림)
+- 계정: 회원가입/로그인, 관리자 페이지(`/admin` — 사용자 목록, 사용 중지, 비밀번호 재설정, 삭제, 가입 열고 닫기)
+- 공유: 특정 사용자(아이디)에게 보기/편집 권한, 또는 링크(로그인 없이 보기/편집)
+- 실시간 공동 편집
+  - Office 문서: ONLYOFFICE 자체 WebSocket으로 글자 단위 동시 편집
+  - 한글: 한 명씩 편집(잠금) + 나머지는 저장될 때마다 실시간 갱신, "편집 요청 → 넘기기"
+  - 접속자 표시·이름 변경 알림은 API의 WebSocket(`/ws/files/{id}`)
+- 자동 저장: Office는 30초마다 강제 저장(편집 중에도 저장소 반영), 한글은 수정 멈추고 5초 뒤
+- PDF: 편집기의 PDF 버튼 / 홈 메뉴 "PDF로 다운로드", 형식 변환 사본(HWP→DOCX 등)
+
 ## 구조
-- 익명 작업공간: 브라우저가 `POST /api/workspaces`로 받은 열쇠를 localStorage에 보관, `X-Workspace` 헤더로 인증.
-  파일은 `./data/ws/<열쇠>/<id>/` 에 저장. 한도: 파일 50MB, 작업공간 500MB/300개 (compose env).
+- 인증: `POST /api/auth/login` → 세션 토큰을 `Authorization: Bearer` 로. DB는 `data/app.db`(SQLite, 비밀번호 scrypt, 토큰은 해시만 저장)
+- 관리자: 첫 실행 때 `.env`의 `ADMIN_USERNAME`/`ADMIN_PASSWORD`로 생성. 계정 도입 전 익명 작업공간 파일은 관리자 계정으로 옮겨진다.
+- 파일: `data/ws/<계정 폴더>/<id>/`. 한도: 파일 50MB, 계정당 500MB/300개 (compose env).
 - Office 파일: ONLYOFFICE가 `http://api:8000/internal/dl/...`(HMAC 서명)로 받고, 저장은 `/internal/callback/...`(서명 + JWT).
-- HWP 파일: 브라우저의 rhwp 편집기가 `exportHwp/exportHwpx` → `PUT /api/files/{id}/content`.
-- 변환: `POST /api/files/{id}/convert` → ONLYOFFICE ConversionService (HWP→DOCX/PDF, DOCX→PDF 등).
-- 비밀값: `.env` (JWT_SECRET, SIGN_SECRET) — 커밋 금지.
+- HWP 파일: 브라우저의 rhwp 편집기가 `exportHwp/exportHwpx` → `PUT /api/files/{id}/content` (잠금 + 버전 확인).
+- 변환/PDF: ONLYOFFICE ConversionService.
+- 로딩 속도: 빌드 때 HWP 글꼴을 같은 출처로 내려받고(함초롬은 woff2), wasm은 brotli 미리 압축, 홈 화면에서 유휴 시간에 미리 받기.
+- HAProxy: myoffice/rhwp 백엔드에 `option forwardfor`(가입·로그인 시도 제한용 실제 IP), `timeout tunnel 1h`(WebSocket).
+- 비밀값: `.env` (JWT_SECRET, SIGN_SECRET, ADMIN_PASSWORD) — 커밋 금지.
+
+## 테스트 (실서버 대상)
+```bash
+tests/run-api-tests.sh          # API 108개 (pytest, 도커 안에서) — 계정·권한·공유·WebSocket·동시성·변환
+tests/e2e/run.sh                # 브라우저 E2E 30개 (Playwright, 로컬 크롬) — 편집·공동편집·자동저장·잠금·PDF
+```
+관리자 비밀번호는 `.env`에서 읽어 테스트 계정을 만들고, 끝나면 지운다.
 
 ## 재배포
 ```bash

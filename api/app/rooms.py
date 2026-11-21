@@ -1,0 +1,139 @@
+"""파일별 실시간 방 — 접속자 목록, HWP 편집 잠금, 저장 알림.
+
+uvicorn 단일 프로세스 기준 메모리 상태(재시작 시 비워지고 클라이언트가 자동 재접속한다).
+잠금 규칙: 편집 권한이 있는 사람 중 먼저 들어온 사람이 잠금을 가진다. 그 사람이 나가거나
+양보(release)하면 다음 편집 가능 접속자에게 넘어간다.
+"""
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+
+from fastapi import WebSocket
+
+COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#db2777", "#65a30d"]
+
+
+@dataclass
+class Member:
+    uid: str
+    name: str
+    editor: bool
+    color: str
+    socks: list = field(default_factory=list)
+
+
+@dataclass
+class Room:
+    members: dict = field(default_factory=dict)  # uid -> Member (입장 순서 유지)
+    lock: str | None = None
+    requests: set = field(default_factory=set)
+
+
+class Rooms:
+    def __init__(self) -> None:
+        self.rooms: dict[str, Room] = {}
+        self.mu = asyncio.Lock()
+
+    # ------------------------------------------------------------ 조회
+    def lock_holder(self, fid: str) -> str | None:
+        r = self.rooms.get(fid)
+        return r.lock if r else None
+
+    def name_of(self, fid: str, uid: str | None) -> str:
+        r = self.rooms.get(fid)
+        m = r.members.get(uid) if r and uid else None
+        return m.name if m else "누군가"
+
+    # ------------------------------------------------------------ 변경
+    async def join(self, fid: str, uid: str, name: str, sock: WebSocket, editor: bool) -> None:
+        async with self.mu:
+            r = self.rooms.setdefault(fid, Room())
+            m = r.members.get(uid)
+            if m:
+                m.socks.append(sock)
+                m.name = name
+            else:
+                used = {x.color for x in r.members.values()}
+                color = next((c for c in COLORS if c not in used), COLORS[len(r.members) % len(COLORS)])
+                r.members[uid] = Member(uid, name, editor, color, [sock])
+            if r.lock is None and editor:
+                r.lock = uid
+        await self.presence(fid)
+
+    async def leave(self, fid: str, uid: str, sock: WebSocket) -> None:
+        async with self.mu:
+            r = self.rooms.get(fid)
+            if not r or uid not in r.members:
+                return
+            m = r.members[uid]
+            if sock in m.socks:
+                m.socks.remove(sock)
+            if not m.socks:
+                del r.members[uid]
+                r.requests.discard(uid)
+                if r.lock == uid:
+                    r.lock = self._next(r)
+            if not r.members:
+                del self.rooms[fid]
+                return
+        await self.presence(fid)
+
+    async def release(self, fid: str, uid: str) -> None:
+        async with self.mu:
+            r = self.rooms.get(fid)
+            if not r or r.lock != uid:
+                return
+            r.lock = self._next(r, skip=uid)
+        await self.presence(fid)
+
+    async def request_lock(self, fid: str, uid: str) -> None:
+        async with self.mu:
+            r = self.rooms.get(fid)
+            if not r or uid not in r.members or not r.members[uid].editor:
+                return
+            if r.lock is None:
+                r.lock = uid
+            else:
+                r.requests.add(uid)
+        await self.presence(fid)
+
+    async def rename_user(self, fid: str, uid: str, name: str) -> None:
+        r = self.rooms.get(fid)
+        if r and uid in r.members:
+            r.members[uid].name = name
+            await self.presence(fid)
+
+    def _next(self, r: Room, skip: str | None = None) -> str | None:
+        # 요청한 사람 우선, 없으면 입장 순서
+        for uid in list(r.requests):
+            if uid != skip and uid in r.members and r.members[uid].editor:
+                r.requests.discard(uid)
+                return uid
+        for uid, m in r.members.items():
+            if uid != skip and m.editor:
+                return uid
+        return None
+
+    # ------------------------------------------------------------ 전송
+    async def presence(self, fid: str) -> None:
+        r = self.rooms.get(fid)
+        if not r:
+            return
+        users = [{"uid": m.uid, "name": m.name, "color": m.color, "editor": m.editor}
+                 for m in r.members.values()]
+        await self.broadcast(fid, {"type": "presence", "users": users, "lock": r.lock,
+                                   "requests": sorted(r.requests)})
+
+    async def broadcast(self, fid: str, msg: dict, exclude: str | None = None) -> None:
+        r = self.rooms.get(fid)
+        if not r:
+            return
+        for uid, m in list(r.members.items()):
+            if uid == exclude:
+                continue
+            for s in list(m.socks):
+                try:
+                    await s.send_json(msg)
+                except Exception:
+                    pass

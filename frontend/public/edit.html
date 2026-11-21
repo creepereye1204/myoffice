@@ -9,25 +9,72 @@
 </head>
 <body class="editor-page">
   <header class="edbar">
-    <a class="icon-btn" href="/" title="내 파일로" aria-label="내 파일로">
+    <a class="icon-btn" href="/" id="back" title="내 파일로" aria-label="내 파일로">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.4 5.4 14 4l-8 8 8 8 1.4-1.4L8.8 12l6.6-6.6Z"/></svg>
     </a>
     <span id="ficon"></span>
     <input id="title" class="title-input" spellcheck="false" aria-label="파일 이름" />
+    <span id="conn" class="conn" title="실시간 연결"></span>
     <span id="status" class="status"></span>
     <div class="grow"></div>
-    <div id="hwp-tools" hidden>
-      <button class="btn primary" id="save">저장</button>
-    </div>
+    <div id="people" class="people" aria-label="접속자"></div>
+    <button class="btn" id="share" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5a3 3 0 1 1 .8 2l-7 3.6a3 3 0 0 1 0 2.8l7 3.6a3 3 0 1 1-.9 1.8l-7-3.6a3 3 0 1 1 0-4.4l7-3.6A3 3 0 0 1 16 5Z"/></svg>
+      <span>공유</span>
+    </button>
+    <button class="btn" id="pdf" title="PDF로 다운로드"><span>PDF</span></button>
+    <button class="btn primary" id="save" hidden>저장</button>
     <button class="icon-btn" id="dl" title="다운로드" aria-label="다운로드">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3V4ZM5 18h14v2H5v-2Z"/></svg>
     </button>
   </header>
+  <div id="banner" class="banner" hidden>
+    <span id="banner-msg"></span><span class="grow"></span>
+    <button class="btn" id="banner-btn" hidden></button>
+  </div>
   <div id="stage" class="stage">
-    <div id="loading" class="loading"><span class="spinner"></span><span id="loading-msg">문서를 여는 중…</span></div>
+    <div id="loading" class="loading"><span class="bar"><i></i></span><span id="loading-msg">편집기를 불러오는 중…</span></div>
     <div id="oo-holder"><div id="oo"></div></div>
     <div id="hwp"></div>
   </div>
+
+  <dialog id="share-dialog">
+    <form method="dialog" id="share-form">
+      <h3>공유</h3>
+      <p class="hint">워드·엑셀·파워포인트·한셀·한쇼는 여러 명이 동시에 고칠 수 있고, 한글은 한 번에 한 명이 편집하고 나머지는 실시간으로 봅니다.</p>
+
+      <h4>사용자에게 공유</h4>
+      <div class="grant-add">
+        <input id="grant-user" placeholder="상대 아이디" autocomplete="off" autocapitalize="off" />
+        <select id="grant-role"><option value="edit">편집 가능</option><option value="view">보기만</option></select>
+        <button type="button" class="btn primary" id="grant-add">추가</button>
+      </div>
+      <ul id="grant-list" class="grant-list"></ul>
+
+      <h4>링크로 공유</h4>
+      <p class="hint">로그인하지 않은 사람도 링크만 있으면 열 수 있습니다.</p>
+      <div class="seg" role="radiogroup" id="link-mode">
+        <button type="button" data-mode="off">끄기</button>
+        <button type="button" data-mode="view">보기만</button>
+        <button type="button" data-mode="edit">편집 가능</button>
+      </div>
+      <div class="keyrow" id="link-row" hidden>
+        <input id="share-url" readonly />
+        <button type="button" class="btn primary" id="share-copy">복사</button>
+      </div>
+      <div class="actions"><button value="cancel" class="btn">닫기</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="name-dialog">
+    <form method="dialog" id="name-form">
+      <h3>이름</h3>
+      <p>함께 편집하는 사람들에게 보일 이름입니다.</p>
+      <input id="name-input" maxlength="30" placeholder="예: 김민수" autocomplete="nickname" required />
+      <div class="actions"><button class="btn primary" value="ok">확인</button></div>
+    </form>
+  </dialog>
+
   <script type="module" src="/edit.js"></script>
 </body>
 </html>

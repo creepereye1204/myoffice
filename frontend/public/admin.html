@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>관리자 — 알오피스</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><img src="/favicon.svg" alt="" width="28" height="28" /><span>알오피스 관리자</span></a>
+    <div class="grow"></div>
+    <a class="btn" href="/">내 파일로</a>
+  </header>
+  <main>
+    <h2>사용자</h2>
+    <label class="switch"><input type="checkbox" id="signup" /> 새 회원가입 받기</label>
+    <p id="summary" class="usage" style="text-align:left"></p>
+    <div class="table-wrap">
+      <table class="admin-table">
+        <thead><tr><th>아이디</th><th>이름</th><th>상태</th><th class="num">파일</th><th class="num">사용량</th><th>가입</th><th>최근 로그인</th><th></th></tr></thead>
+        <tbody id="users"></tbody>
+      </table>
+    </div>
+  </main>
+  <script type="module" src="/admin.js"></script>
+</body>
+</html>

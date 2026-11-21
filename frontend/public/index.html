@@ -18,9 +18,19 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 0 4.2 12.6l4.1 4.1 1.4-1.4-4.1-4.1A7 7 0 0 0 11 4Zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10Z"/></svg>
       <input id="q" type="search" placeholder="파일 검색" autocomplete="off" />
     </div>
-    <button class="icon-btn" id="ws-btn" title="작업공간 열쇠" aria-label="작업공간 열쇠">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm5.6-4A6 6 0 1 0 12.6 14H16v3h3v-3h2v-4h-8.4Z"/></svg>
-    </button>
+    <div class="account">
+      <button class="account-btn" id="account-btn" aria-haspopup="menu">
+        <span class="avatar small" id="me-avatar"></span><span id="me-name"></span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5H7Z"/></svg>
+      </button>
+      <div class="menu account-menu" id="account-menu" hidden>
+        <div class="menu-head" id="me-id"></div>
+        <button data-a="name">이름 바꾸기</button>
+        <button data-a="password">비밀번호 변경</button>
+        <a href="/admin" id="admin-link" hidden>관리자</a>
+        <hr /><button data-a="logout">로그아웃</button>
+      </div>
+    </div>
   </header>
 
   <main>
@@ -58,7 +68,10 @@
 
     <section class="files">
       <div class="files-head">
-        <h2>내 파일</h2>
+        <nav class="seg scope" role="tablist">
+          <button class="on" data-scope="mine">내 파일</button>
+          <button data-scope="shared">공유받은 파일</button>
+        </nav>
         <nav class="tabs" role="tablist">
           <button class="on" data-f="all">전체</button>
           <button data-f="word">워드</button>
@@ -87,20 +100,14 @@
     </section>
   </main>
 
-  <dialog id="ws-dialog">
-    <form method="dialog">
-      <h3>작업공간 열쇠</h3>
-      <p>로그인 없이 이 브라우저에 파일이 묶여 있습니다. 아래 열쇠를 다른 기기에 붙여 넣으면 같은 파일을 볼 수 있습니다. <strong>열쇠를 아는 사람은 누구나 파일에 접근할 수 있으니</strong> 공유에 주의하세요.</p>
-      <div class="keyrow">
-        <input id="ws-key" readonly />
-        <button type="button" class="btn" id="ws-copy">복사</button>
-      </div>
-      <label class="lbl" for="ws-new">다른 열쇠로 전환</label>
-      <input id="ws-new" placeholder="열쇠 붙여넣기" autocomplete="off" />
-      <div class="actions">
-        <button value="cancel" class="btn">닫기</button>
-        <button type="button" class="btn primary" id="ws-apply">전환</button>
-      </div>
+  <dialog id="pw-dialog">
+    <form method="dialog" id="pw-form">
+      <h3>비밀번호 변경</h3>
+      <label class="lbl" for="pw-old">현재 비밀번호</label>
+      <input id="pw-old" type="password" autocomplete="current-password" required />
+      <label class="lbl" for="pw-new" style="margin-top:12px">새 비밀번호 (8자 이상)</label>
+      <input id="pw-new" type="password" autocomplete="new-password" minlength="8" required />
+      <div class="actions"><button value="cancel" class="btn" formnovalidate>취소</button><button class="btn primary" value="ok">변경</button></div>
     </form>
   </dialog>
 

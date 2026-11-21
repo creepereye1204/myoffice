@@ -1,45 +1,103 @@
-// 공통: API 호출 + 익명 작업공간 관리
+// 공통: API 호출 + 로그인 세션
 // www.<도메인> 에서는 api.<도메인> 을 쓰고, 그 외(로컬 등)는 같은 출처 /api 프록시
 export const API_BASE = location.hostname.startsWith('www.') ? `https://api.${location.hostname.slice(4)}` : '';
-const WS_KEY = 'rhwp.workspace';
+const TOKEN_KEY = 'rhwp.token';
+const ME_KEY = 'rhwp.me';
 
-export function getWorkspace() {
-  try { return localStorage.getItem(WS_KEY); } catch { return null; }
+export function getToken() { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } }
+export function setSession(token, user) {
+  try { localStorage.setItem(TOKEN_KEY, token); localStorage.setItem(ME_KEY, JSON.stringify(user)); } catch {}
 }
-export function setWorkspace(ws) {
-  try { localStorage.setItem(WS_KEY, ws); } catch {}
-}
+export function clearSession() { try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); } catch {} }
+export function cachedMe() { try { return JSON.parse(localStorage.getItem(ME_KEY) || 'null'); } catch { return null; } }
 
-async function ensureWorkspace(force = false) {
-  let ws = getWorkspace();
-  if (ws && !force) return ws;
-  const r = await fetch(`${API_BASE}/api/workspaces`, { method: 'POST' });
-  if (!r.ok) throw new Error('작업공간을 만들 수 없습니다');
-  ws = (await r.json()).workspace;
-  setWorkspace(ws);
-  return ws;
+export function goLogin() {
+  location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
 }
 
-export async function api(path, opts = {}, retried = false) {
-  const ws = await ensureWorkspace();
-  const headers = { 'X-Workspace': ws, ...(opts.headers || {}) };
+/** 로그인 필수 페이지: 세션 확인, 없으면 로그인 화면으로 */
+export async function requireLogin() {
+  if (!getToken()) { goLogin(); return new Promise(() => {}); }
+  try {
+    const me = await api('/api/auth/me');
+    setSession(getToken(), me);
+    return me;
+  } catch (e) {
+    if (e.status === 401) { clearSession(); goLogin(); return new Promise(() => {}); }
+    throw e;
+  }
+}
+
+// 공유 링크로 들어온 경우: X-Share 토큰도 같이 보낸다 (로그인 없이도 열림)
+let SHARE = null;
+export function setShare(token) { SHARE = token; }
+export function getShare() { return SHARE; }
+
+// 공동 편집 표시용 사용자. 로그인하면 계정 기준(u<id>), 아니면 브라우저별 임시 id
+export function getUser() {
+  const me = getToken() && cachedMe();
+  if (me) return { uid: `u${me.id}`, name: me.name, account: true };
+  let u = null;
+  try { u = JSON.parse(localStorage.getItem('rhwp.user') || 'null'); } catch {}
+  if (!u || !u.uid) {
+    const rnd = crypto.getRandomValues(new Uint8Array(9));
+    u = { uid: btoa(String.fromCharCode(...rnd)).replace(/[+/=]/g, (c) => ({ '+': '-', '/': '_', '=': '' }[c])), name: '' };
+    try { localStorage.setItem('rhwp.user', JSON.stringify(u)); } catch {}
+  }
+  return u;
+}
+export function setUserName(name) {
+  const u = getUser(); u.name = name.trim().slice(0, 30);
+  try { localStorage.setItem('rhwp.user', JSON.stringify(u)); } catch {}
+  return u;
+}
+
+export async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  const t = getToken();
+  if (t) headers.Authorization = `Bearer ${t}`;
+  if (SHARE) headers['X-Share'] = SHARE;
   let body = opts.body;
   if (body && !(body instanceof FormData) && !(body instanceof Uint8Array) && !(body instanceof Blob) && typeof body === 'object') {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(body);
   }
-  const r = await fetch(`${API_BASE}${path}`, { ...opts, headers, body });
-  if (r.status === 401 && !retried) {
-    await ensureWorkspace(true);
-    return api(path, opts, true);
-  }
+  // timeout(ms) 지정 시 응답이 없으면 끊는다 (저장이 영원히 '저장 중'에 걸리지 않게)
+  const ctrl = opts.timeout ? new AbortController() : null;
+  const timer = ctrl && setTimeout(() => ctrl.abort(), opts.timeout);
+  let r;
+  try {
+    r = await fetch(`${API_BASE}${path}`, { ...opts, headers, body, signal: ctrl?.signal || opts.signal });
+  } catch (e) {
+    const err = new Error(e.name === 'AbortError' ? '서버 응답이 없습니다. 잠시 후 다시 저장합니다' : '네트워크 연결을 확인하세요');
+    err.status = 0; throw err;
+  } finally { if (timer) clearTimeout(timer); }
   if (!r.ok) {
     let msg = `요청 실패 (${r.status})`;
     try { const j = await r.json(); if (j.detail) msg = typeof j.detail === 'string' ? j.detail : msg; } catch {}
-    throw new Error(msg);
+    const err = new Error(msg); err.status = r.status;
+    throw err;
   }
   const ct = r.headers.get('content-type') || '';
   return ct.includes('application/json') ? r.json() : r;
+}
+
+export async function logout() {
+  try { await api('/api/auth/logout', { method: 'POST' }); } catch {}
+  clearSession();
+  location.href = '/login';
+}
+
+/** 저장하지 않고 다른 형식(PDF 등)으로 바로 내려받기 */
+export async function exportAs(id, to) {
+  const r = await api(`/api/files/${id}/export`, { method: 'POST', body: { to } });
+  const blob = await r.blob();
+  const cd = r.headers.get('content-disposition') || '';
+  const name = decodeURIComponent((cd.match(/filename\*=UTF-8''([^;]+)/) || [])[1] || `document.${to}`);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
 export async function download(id) {
@@ -96,4 +154,30 @@ export function fmtTime(sec) {
   if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
   if (diff < 86400 && d.getDate() === now.getDate()) return `${Math.floor(diff / 3600)}시간 전`;
   return d.toLocaleDateString('ko-KR', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+// 실시간 소켓 (자동 재접속 + 20초 핑 — 프록시 유휴 타임아웃 방지)
+export function connectRoom(fileId, onMsg, onState = () => {}) {
+  const base = API_BASE || location.origin;
+  const u = getUser();
+  const q = new URLSearchParams({ uid: u.uid, name: u.name || '손님' });
+  if (SHARE) q.set('s', SHARE);
+  if (getToken()) q.set('t', getToken());
+  const url = `${base.replace(/^http/, 'ws')}/ws/files/${fileId}?${q}`;
+  let sock, timer, retry = 0, closed = false;
+  const open = () => {
+    sock = new WebSocket(url);
+    sock.onopen = () => { retry = 0; onState(true); timer = setInterval(() => sock.readyState === 1 && sock.send('{"type":"ping"}'), 20000); };
+    sock.onmessage = (e) => { try { onMsg(JSON.parse(e.data)); } catch {} };
+    sock.onclose = (e) => {
+      clearInterval(timer); onState(false);
+      if (closed || e.code === 4401 || e.code === 4403) return;
+      setTimeout(open, Math.min(15000, 1000 * 2 ** retry++));
+    };
+  };
+  open();
+  return {
+    send: (m) => sock?.readyState === 1 && sock.send(JSON.stringify(m)),
+    close: () => { closed = true; sock?.close(); },
+  };
 }
