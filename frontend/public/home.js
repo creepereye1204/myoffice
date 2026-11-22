@@ -192,9 +192,24 @@ function prefetch(href, as) {
   const l = document.createElement('link'); l.rel = 'prefetch'; l.href = href; if (as) l.as = as;
   document.head.appendChild(l);
 }
+// 워드·엑셀·파워포인트(한셀·한쇼) 편집기 본체 — 경로에 버전이 들어 있어 api.js 에서 알아낸다
+const OO_COMMON = ['sdkjs/common/AllFonts.js', 'sdkjs/common/libfont/engine/fonts.js', 'sdkjs/common/libfont/engine/fonts.wasm',
+  'sdkjs/common/Charts/ChartStyles.js', 'sdkjs/common/Images/fonts_thumbnail_ea.png.bin', 'fonts/063', 'fonts/064'];
+const OO_APPS = [['word', 'documenteditor'], ['cell', 'spreadsheeteditor'], ['slide', 'presentationeditor']];
+async function warmOffice() {
+  const js = await (await fetch('/office/web-apps/apps/api/documents/api.js')).text();
+  const ver = js.match(/\d+\.\d+\.\d+-[0-9a-f]{16,}/)?.[0];
+  if (!ver) return;
+  const base = `/office/${ver}/`;
+  for (const p of OO_COMMON) prefetch(base + p);
+  for (const [sdk, app] of OO_APPS) {
+    for (const p of [`sdkjs/${sdk}/sdk-all-min.js`, `sdkjs/${sdk}/sdk-all.js`, `web-apps/apps/${app}/main/app.js`,
+      `web-apps/apps/${app}/main/resources/css/app.css`]) prefetch(base + p);
+  }
+}
 async function warmEditors() {
   if (navigator.connection?.saveData) return;
-  prefetch('/office/web-apps/apps/api/documents/api.js', 'script');
+  warmOffice().catch(() => {});
   try {
     const html = await (await fetch('/rhwp/index.html')).text();
     for (const m of html.matchAll(/(?:src|href)="(\/rhwp\/assets\/[^"]+)"/g)) prefetch(m[1]);

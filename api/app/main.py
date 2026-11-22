@@ -988,6 +988,14 @@ async def flush_onlyoffice(ws: str, fid: str) -> dict:
     return read_meta(ws, fid)
 
 
+@app.post("/api/files/{fid}/save")
+async def save_now(a: Access = Depends(access)):
+    """편집 화면의 Ctrl+S — 열려 있는 Office 문서를 바로 저장소에 반영 (자동 저장을 기다리지 않음)."""
+    if not can_edit(a):
+        raise HTTPException(403, "보기 전용입니다")
+    return public(await flush_onlyoffice(a.ws, a.fid))
+
+
 @app.post("/api/files/{fid}/convert")
 async def convert(body: Convert, a: Access = Depends(owner)):
     """ONLYOFFICE 변환 서비스로 다른 형식 사본을 만든다 (예: HWP→DOCX, DOCX→PDF)."""

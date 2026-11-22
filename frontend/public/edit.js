@@ -59,6 +59,10 @@ async function openOnlyOffice() {
   config.events = {
     // 편집기 자체 진행률(%)이 튀는 대신, 문서가 실제로 준비될 때까지 우리 로딩 화면 유지
     onDocumentReady: doneLoading,
+    onAppReady: () => {
+      // 편집기 안에서 누른 Ctrl+S 도 같은 저장으로 (브라우저 저장 창 X, 보기 전용이면 안내)
+      try { document.querySelector('iframe[name="frameEditor"]').contentWindow.addEventListener('keydown', onSaveKey, true); } catch {}
+    },
     onDocumentStateChange: (e) => { if (config.editorConfig.mode === 'edit') setStatus(e.data ? '수정 중…' : '자동 저장됨', e.data ? '' : 'ok'); },
     onError: (e) => { doneLoading(); toast(`편집기 오류: ${e.data?.errorDescription || e.data?.errorCode}`, 'err'); },
   };
@@ -69,11 +73,36 @@ async function openOnlyOffice() {
   else if (file.role === 'view') setStatus('보기 전용 공유');
 }
 
+// ---------------------------------------------------------------- Ctrl+S
+// 어디에 초점이 있든(제목칸, 로딩 중, 편집기 안) 브라우저의 '페이지를 HTML로 저장'이 뜨지 않게 하고 서버에 저장.
+// 한글 입력 상태에서는 e.key 가 'ㄴ' 이라 e.code 로도 확인.
+const isSaveKey = (e) => (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.code === 'KeyS' || e.key.toLowerCase() === 's');
+let ooSaving = false;
+async function saveNow() {
+  if (!file) return;
+  if (file.role === 'view' || (file.type !== 'hwp' && !file.editable)) return toast('보기 전용 문서입니다');
+  if (file.type === 'hwp') {
+    if (!editor) return toast('문서를 여는 중입니다');
+    return canWrite ? saveHwp(true) : nudge();
+  }
+  if (ooSaving) return;
+  ooSaving = true; setStatus('저장 중…');
+  try {
+    await api(`/api/files/${id}/save`, { method: 'POST', timeout: 20000 });
+    setStatus(`저장됨 · ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`, 'ok');
+    toast('저장했습니다', 'ok');
+  } catch (e) { setStatus('저장 실패', 'err'); toast(e.message, 'err'); } finally { ooSaving = false; }
+}
+function onSaveKey(e) { if (!isSaveKey(e)) return; e.preventDefault(); e.stopImmediatePropagation(); saveNow(); }
+window.addEventListener('keydown', onSaveKey, true);
+
 // ---------------------------------------------------------------- rhwp (HWP/HWPX) — 한 명 편집 + 나머지 실시간 보기
 let editor, dirty = false, saving = false, version = 0, canWrite = false, guardOn = false, connected = false, connTimer;
 
+let manualPending = false;
 async function saveHwp(manual = false) {
-  if (!editor || saving || !canWrite) return;
+  if (!editor || !canWrite) return;
+  if (saving) { if (manual) manualPending = true; return; }  // 자동 저장 중에 누른 Ctrl+S 는 끝난 뒤 이어서
   saving = true;
   setStatus('저장 중…');
   try {
@@ -91,7 +120,13 @@ async function saveHwp(manual = false) {
     setStatus('저장 실패', 'err');
     toast(e.message, 'err');
     if (e.status === 409) await reloadHwp();
-  } finally { saving = false; }
+  } finally {
+    saving = false;
+    if (manualPending) {
+      manualPending = false;
+      if (dirty) saveHwp(true); else if ($('#status').classList.contains('ok')) toast('저장했습니다', 'ok');
+    }
+  }
 }
 
 async function reloadHwp(by) {
@@ -110,11 +145,7 @@ function installGuard(frame) {
     || ((e.ctrlKey || e.metaKey) && ['c', 'f', 'a'].includes(e.key.toLowerCase()));
   win.addEventListener('keydown', (e) => {
     // 문서 안에서 누른 Ctrl+S 도 편집기 자체 '파일로 저장' 대신 서버 저장으로
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-      e.preventDefault(); e.stopImmediatePropagation();
-      if (canWrite) saveHwp(true); else nudge();
-      return;
-    }
+    if (isSaveKey(e)) return onSaveKey(e);
     if (guardOn && !allowKey(e)) block(e);
   }, true);
   for (const t of ['beforeinput', 'paste', 'cut', 'drop', 'compositionstart']) win.addEventListener(t, block, true);
@@ -164,16 +195,13 @@ async function openHwp() {
   setInterval(async () => {
     let st;
     try { st = await editor.getDocumentState(); } catch { return; }
-    if (st.changeSeq !== lastSeq) { if (lastSeq !== -1) lastChange = Date.now(); lastSeq = st.changeSeq; }
+    if (st.changeSeq !== lastSeq) { if (lastSeq !== -1 || st.changeSeq > 0) lastChange = Date.now(); lastSeq = st.changeSeq; }
     if (st.dirty !== dirty) { dirty = st.dirty; if (dirty && canWrite) setStatus('수정됨 — 곧 자동 저장'); }
     if (dirty && canWrite && !saving && Date.now() - lastChange >= 5000) saveHwp();
     window.__autosave = { dirty, canWrite, saving, seq: st.changeSeq, idle: Date.now() - lastChange };  // 진단용
   }, 1500);
 
   $('#save').addEventListener('click', () => saveHwp(true));
-  window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveHwp(true); }
-  });
   window.addEventListener('beforeunload', (e) => { if (dirty && canWrite) { e.preventDefault(); e.returnValue = ''; } });
 }
 

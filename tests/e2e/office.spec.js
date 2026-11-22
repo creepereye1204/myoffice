@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { newUser, newGuest, create, api, openEditor, ooType, textOf, noErrors } from './helpers.js';
+import { newUser, newGuest, create, api, openEditor, ooType, textOf, noErrors, watchSaveKey, ctrlS } from './helpers.js';
 
 for (const kind of ['docx', 'xlsx', 'pptx', 'hcell', 'hshow']) {
   test(`ONLYOFFICE: ${kind} 새로 만들어 열기 (오류 없음, 편집 모드, 진행률 안 보임)`, async ({ browser }) => {
@@ -108,4 +108,37 @@ test('이름 바꾸기: 편집 화면에서 바꾸면 다른 접속자 화면에
   await owner.page.press('#title', 'Enter');
   await expect(guest.page.locator('#title')).toHaveValue('분기 보고');
   expect((await api(owner, `/api/files/${f.id}`)).name).toBe('분기 보고.pptx');
+});
+
+test('ONLYOFFICE: Ctrl+S — 어디서 눌러도 브라우저 저장 창 대신 서버에 바로 저장', async ({ browser }) => {
+  const u = await newUser(browser);
+  await watchSaveKey(u.ctx);
+  const f = await create(u, 'docx');
+  await u.page.goto(`/edit?id=${f.id}`);
+  await u.page.keyboard.press('Control+s');            // 로딩 중
+  await expect(u.page.locator('#loading')).toHaveCount(0, { timeout: 120_000 });
+  await ooType(u.page, 'CTRLS4455');
+  await u.page.keyboard.press('Control+s');            // 편집기 안
+  await u.page.click('#title');
+  await u.page.keyboard.press('Control+s');            // 제목 칸
+  await expect(u.page.locator('.toast.ok').first()).toContainText('저장했습니다');
+  // 30초 자동 저장을 기다리지 않고 바로 반영
+  await expect.poll(async () => (await textOf(u, f.id)).includes('CTRLS4455'), { timeout: 15_000, intervals: [2000] }).toBe(true);
+  const presses = await ctrlS(u.page);
+  expect(presses.length).toBeGreaterThanOrEqual(3);
+  expect(presses.every(Boolean), JSON.stringify(presses)).toBe(true);
+  noErrors(u.errors);
+});
+
+test('ONLYOFFICE: 보기 전용에서 Ctrl+S — 저장 창 없이 안내만', async ({ browser }) => {
+  const owner = await newUser(browser);
+  const f = await create(owner, 'docx');
+  const { token } = await api(owner, `/api/files/${f.id}/share`, { method: 'POST', json: { mode: 'view' } });
+  const g = await newGuest(browser);
+  await watchSaveKey(g.ctx);
+  await openEditor(g.page, `s=${token}`);
+  await g.page.keyboard.press('Control+s');
+  await expect(g.page.locator('.toast')).toContainText('보기 전용');
+  expect((await ctrlS(g.page)).every(Boolean)).toBe(true);
+  expect((await api(owner, `/api/files/${f.id}`)).version).toBe(1);
 });

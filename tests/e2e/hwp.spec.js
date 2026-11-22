@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { newUser, newGuest, create, api, openEditor, hwpType, uploadFixture, textOf, noErrors } from './helpers.js';
+import { newUser, newGuest, create, api, openEditor, hwpType, uploadFixture, textOf, noErrors, watchSaveKey, ctrlS } from './helpers.js';
 
 test('한글: 새 문서 열기 (오류 없음)', async ({ browser }) => {
   const u = await newUser(browser);
@@ -109,4 +109,27 @@ test('한글: 보기 전용 공유는 편집 불가', async ({ browser }) => {
   await g.page.waitForTimeout(7000);
   expect((await api(owner, `/api/files/${f.id}`)).version).toBe(1);
   noErrors(g.errors);
+});
+
+test('한글: Ctrl+S — 로딩 중·제목 칸·한글 입력 상태에서도 브라우저 저장 창이 뜨지 않음', async ({ browser }) => {
+  const u = await newUser(browser);
+  await watchSaveKey(u.ctx);
+  const f = await uploadFixture(u, 'sample.hwp');
+  await u.page.goto(`/edit?id=${f.id}`);
+  await u.page.keyboard.press('Control+s');            // 로딩 중
+  await expect(u.page.locator('#loading')).toHaveCount(0, { timeout: 120_000 });
+  await hwpType(u.page, 'Z');
+  await u.page.keyboard.press('Control+s');            // 문서 안
+  await expect(u.page.locator('.toast.ok')).toContainText('저장했습니다');
+  await u.page.click('#title');
+  // 한글 자판 상태: key 는 'ㄴ', code 는 KeyS
+  const cdp = await u.ctx.newCDPSession(u.page);
+  for (const type of ['rawKeyDown', 'keyUp']) {
+    await cdp.send('Input.dispatchKeyEvent', { type, modifiers: 2, key: 'ㄴ', code: 'KeyS', windowsVirtualKeyCode: 83 });
+  }
+  await expect.poll(async () => (await ctrlS(u.page)).length).toBeGreaterThanOrEqual(3);
+  const presses = await ctrlS(u.page);
+  expect(presses.length).toBeGreaterThanOrEqual(3);
+  expect(presses.every(Boolean), JSON.stringify(presses)).toBe(true);
+  noErrors(u.errors);
 });

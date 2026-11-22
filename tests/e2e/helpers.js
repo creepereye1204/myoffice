@@ -123,3 +123,14 @@ export async function hwpType(page, text) {
 export function noErrors(errors) {
   expect(errors, errors.join('\n')).toEqual([]);
 }
+
+/** Ctrl+S 를 눌렀을 때 브라우저 기본 동작('페이지 저장')이 막혔는지 모든 프레임에서 기록 → window.top.__ctrlS */
+export async function watchSaveKey(ctx) {
+  await ctx.addInitScript(() => {
+    window.addEventListener('keydown', (e) => {
+      if (!((e.ctrlKey || e.metaKey) && e.code === 'KeyS')) return;
+      setTimeout(() => { try { (window.top.__ctrlS ||= []).push(e.defaultPrevented); } catch {} }, 0);
+    }, true);
+  });
+}
+export const ctrlS = (page) => page.evaluate(() => window.__ctrlS || []);
