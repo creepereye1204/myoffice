@@ -181,11 +181,11 @@ $('#pw-dialog').addEventListener('close', async () => {
 
 // 편집기 파일 미리 받기 (유휴 시간에) — 처음 여는 속도 개선
 const HWP_FONTS = [
-  '/rhwp/ext-fonts/gh/projectnoonnu/noonfonts_2104@1.0/HANBatang.woff2',
-  '/rhwp/ext-fonts/gh/projectnoonnu/noonfonts_four@1.0/HCRDotum.woff2',
-  '/rhwp/fonts/RHWPOldHangul-Regular.woff2',
-  '/rhwp/fonts/NotoSansKR-Bold.woff2', '/rhwp/fonts/NotoSerifKR-Bold.woff2',
-  '/rhwp/fonts/NotoSerifKR-Regular.woff2', '/rhwp/fonts/NotoSansKR-ExtraLight.woff2',
+  '/rhwp/ext-fonts/gh/projectnoonnu/noonfonts_2104@1.0/HANBatang.woff.ttf',
+  '/rhwp/ext-fonts/gh/projectnoonnu/noonfonts_four@1.0/HCRDotum.woff.ttf',
+  '/rhwp/fonts/RHWPOldHangul-Regular.woff2.ttf',
+  '/rhwp/fonts/NotoSansKR-Bold.woff2.ttf', '/rhwp/fonts/NotoSerifKR-Bold.woff2.ttf',
+  '/rhwp/fonts/NotoSerifKR-Regular.woff2.ttf', '/rhwp/fonts/NotoSansKR-ExtraLight.woff2.ttf',
 ];
 function prefetch(href, as) {
   if (document.querySelector(`link[href="${href}"]`)) return;
