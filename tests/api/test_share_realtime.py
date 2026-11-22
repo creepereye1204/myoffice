@@ -168,6 +168,7 @@ def test_ws_presence_lock_flow(http, U):
                 # 이름 바꾸기 반영 (손님만 — 계정 사용자는 계정 이름 고정)
                 await B.send({"type": "name", "name": "새손님"})
                 m = await A.presence(lambda m: any(u["name"] == "새손님" for u in m["users"]))
+                await B.send({"type": "bye"})  # 창 닫기
             # B가 나가면 잠금이 남은 A에게
             m = await A.presence(lambda m: len(m["users"]) == 1)
             assert m["lock"] == me
@@ -251,4 +252,48 @@ def test_ws_ping(http, U):
             await A.ws.send("not json")  # 잘못된 메시지 → 서버가 죽지 않아야
         async with Client(f["id"], "pinger", "p", t=U["_token"]) as A:
             await A.presence()
+    run(go())
+
+
+def test_ws_lock_survives_brief_disconnect(http, U):
+    """편집자의 연결이 잠깐 끊겨도(와이파이 등) 잠금을 바로 뺏기지 않고, 다시 들어오면 그대로 편집."""
+    H = hdr(U)
+    me = f"u{U['_id']}"
+    f = make(http, H, "hwp")
+    tok = share(http, H, f["id"], "edit")
+
+    async def go():
+        async with Client(f["id"], "guest1", "손님", s=tok) as B:
+            m = await B.presence()
+            assert m["lock"] == "guest1"  # 먼저 들어온 B 가 잠금
+        # B 가 갑자기 끊김(bye 없이) → 그 사이 A 가 들어와도 잠금은 B 에게 남음
+        async with Client(f["id"], "x", "주인", t=U["_token"]) as A:
+            m = await A.presence()
+            assert m["lock"] == "guest1"
+            async with Client(f["id"], "guest1", "손님", s=tok) as B2:  # 10초 안에 재접속
+                m = await A.presence(lambda m: len(m["users"]) == 2)
+                assert m["lock"] == "guest1"
+                await B2.send({"type": "bye"})  # 창 닫기 → 바로 넘김
+                m = await A.presence(lambda m: m["lock"] == me, timeout=5)
+    run(go())
+
+
+def test_ws_lock_moves_after_grace(http, U):
+    """끊긴 편집자가 돌아오지 않으면 잠시 뒤 다음 사람에게 잠금이 넘어간다."""
+    H = hdr(U)
+    me = f"u{U['_id']}"
+    f = make(http, H, "hwp")
+    tok = share(http, H, f["id"], "edit")
+
+    async def go():
+        async with Client(f["id"], "x", "주인", t=U["_token"]) as A:
+            await A.presence(lambda m: m["lock"] == me)
+            async with Client(f["id"], "guest1", "손님", s=tok) as B:
+                await B.presence(lambda m: len(m["users"]) == 2)
+                await A.ws.close()  # 갑작스러운 끊김
+                await asyncio.sleep(3)
+                assert http.put(f"/api/files/{f['id']}/content", content=(FIX / "sample.hwp").read_bytes(),
+                                headers={"X-Share": tok, "X-Client": "guest1"}).status_code == 409  # 아직 주인 잠금
+                m = await B.presence(lambda m: m["lock"] == "guest1", timeout=15)
+                assert [u["uid"] for u in m["users"]] == ["guest1"]
     run(go())

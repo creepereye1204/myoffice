@@ -58,12 +58,25 @@ async function openOnlyOffice() {
   await loadScript(apiUrl);
   config.events = {
     // 편집기 자체 진행률(%)이 튀는 대신, 문서가 실제로 준비될 때까지 우리 로딩 화면 유지
-    onDocumentReady: doneLoading,
+    onDocumentReady: () => { ooReady = true; doneLoading(); },
     onAppReady: () => {
-      // 편집기 안에서 누른 Ctrl+S 도 같은 저장으로 (브라우저 저장 창 X, 보기 전용이면 안내)
-      try { document.querySelector('iframe[name="frameEditor"]').contentWindow.addEventListener('keydown', onSaveKey, true); } catch {}
+      // 편집기 안에서 누른 Ctrl+S: 브라우저 저장 창만 막고 키는 편집기에도 전달 (엑셀은 입력 중인 셀을 먼저 확정해야 함)
+      // → 잠시 뒤 서버 저장 확인. 보기 전용이면 안내만.
+      try {
+        document.querySelector('iframe[name="frameEditor"]').contentWindow.addEventListener('keydown', (e) => {
+          if (!isSaveKey(e)) return;
+          e.preventDefault();
+          if (config.editorConfig.mode !== 'edit' || file.role === 'view') { e.stopImmediatePropagation(); saveNow(); }
+          else saveNow(true);  // 키는 편집기에도 전달 → 엑셀은 입력 중인 셀을 확정
+        }, true);
+      } catch {}
     },
-    onDocumentStateChange: (e) => { if (config.editorConfig.mode === 'edit') setStatus(e.data ? '수정 중…' : '자동 저장됨', e.data ? '' : 'ok'); },
+    onDocumentStateChange: (e) => {
+      // e.data=true: 아직 서버(문서 서버)로 안 보낸 변경이 있음 → false 가 되면 다 보냄
+      ooPending = !!e.data;
+      if (!ooPending) ooFlushed.splice(0).forEach((r) => r());
+      if (config.editorConfig.mode === 'edit' && !ooSaving) setStatus(e.data ? '수정 중…' : '자동 저장됨', e.data ? '' : 'ok');
+    },
     onError: (e) => { doneLoading(); toast(`편집기 오류: ${e.data?.errorDescription || e.data?.errorCode}`, 'err'); },
   };
   setTimeout(doneLoading, 60000);
@@ -77,8 +90,10 @@ async function openOnlyOffice() {
 // 어디에 초점이 있든(제목칸, 로딩 중, 편집기 안) 브라우저의 '페이지를 HTML로 저장'이 뜨지 않게 하고 서버에 저장.
 // 한글 입력 상태에서는 e.key 가 'ㄴ' 이라 e.code 로도 확인.
 const isSaveKey = (e) => (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.code === 'KeyS' || e.key.toLowerCase() === 's');
-let ooSaving = false;
-async function saveNow() {
+let ooSaving = false, ooReady = false, ooPending = false;
+const ooFlushed = [], ooSavedWaiters = [];
+const waitFor = (list, ms) => Promise.race([new Promise((r) => list.push(r)), new Promise((r) => setTimeout(r, ms))]);
+async function saveNow(fromEditor = false) {
   if (!file) return;
   if (file.role === 'view' || (file.type !== 'hwp' && !file.editable)) return toast('보기 전용 문서입니다');
   if (file.type === 'hwp') {
@@ -86,9 +101,19 @@ async function saveNow() {
     return canWrite ? saveHwp(true) : nudge();
   }
   if (ooSaving) return;
+  if (!ooReady) return toast('문서를 여는 중입니다');
   ooSaving = true; setStatus('저장 중…');
   try {
-    await api(`/api/files/${id}/save`, { method: 'POST', timeout: 20000 });
+    // 편집기가 방금 입력한 내용을 문서 서버로 다 보낼 때까지 기다린 뒤 (최대 10초) 저장소에 저장
+    // 편집기 안에서 누른 Ctrl+S 는 편집기가 직접 저장한다 (엑셀은 입력 중인 셀을 확정한 뒤, ~1초).
+    // 저장소에 반영되면 서버가 실시간 연결로 알려 준다. 바뀐 게 없으면 알림이 없으니 잠시 뒤 직접 확인.
+    let done = false;
+    if (fromEditor) done = await waitFor(ooSavedWaiters, 4000) === 'saved';
+    if (!done) {
+      if (ooPending) await waitFor(ooFlushed, 10000);
+      const r = await api(`/api/files/${id}/save`, { method: 'POST', timeout: 30000 });
+      if (!r.saved) throw new Error('저장을 확인하지 못했습니다 — 잠시 뒤 다시 시도해 주세요 (자동 저장은 계속됩니다)');
+    }
     setStatus(`저장됨 · ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`, 'ok');
     toast('저장했습니다', 'ok');
   } catch (e) { setStatus('저장 실패', 'err'); toast(e.message, 'err'); } finally { ooSaving = false; }
@@ -323,6 +348,8 @@ async function main() {
       if (file.type === 'hwp' && !(m.lock === me.uid && m.requests?.length)) applyLock();
     } else if (m.type === 'saved' && file.type === 'hwp' && editor && !canWrite) {
       reloadHwp(m.by).catch(() => {});
+    } else if (m.type === 'oo-saved') {
+      ooSavedWaiters.splice(0).forEach((r) => r('saved'));
     } else if (m.type === 'renamed') {
       file.name = m.name; if (document.activeElement !== t) t.value = base(); document.title = `${file.name} — 알오피스`;
     }
@@ -330,6 +357,9 @@ async function main() {
     clearTimeout(connTimer);
     if (on) connected = true; else connTimer = setTimeout(() => { connected = false; applyLock(); }, 8000);
     $('#conn').classList.toggle('on', on); $('#conn').title = on ? '실시간 연결됨' : '연결 끊김 — 다시 연결 중'; });
+
+  // 창을 닫거나 다른 페이지로 갈 때는 편집 잠금을 바로 넘긴다 (갑작스러운 끊김만 잠시 유지)
+  window.addEventListener('pagehide', (e) => { if (!e.persisted) room.bye(); });
 
   try {
     if (file.type === 'hwp') await openHwp();

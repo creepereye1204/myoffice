@@ -179,5 +179,6 @@ export function connectRoom(fileId, onMsg, onState = () => {}) {
   return {
     send: (m) => sock?.readyState === 1 && sock.send(JSON.stringify(m)),
     close: () => { closed = true; sock?.close(); },
+    bye: () => { closed = true; if (sock?.readyState === 1) sock.send('{"type":"bye"}'); },
   };
 }

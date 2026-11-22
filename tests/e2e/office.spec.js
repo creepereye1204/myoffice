@@ -122,8 +122,8 @@ test('ONLYOFFICE: Ctrl+S — 어디서 눌러도 브라우저 저장 창 대신 
   await u.page.click('#title');
   await u.page.keyboard.press('Control+s');            // 제목 칸
   await expect(u.page.locator('.toast.ok').first()).toContainText('저장했습니다');
-  // 30초 자동 저장을 기다리지 않고 바로 반영
-  await expect.poll(async () => (await textOf(u, f.id)).includes('CTRLS4455'), { timeout: 15_000, intervals: [2000] }).toBe(true);
+  // '저장했습니다'가 뜬 시점에 이미 저장소에 반영 (30초 자동 저장을 기다리지 않음). 변환 대기열이 밀려도 되게 한 번만 확인
+  expect(await textOf(u, f.id)).toContain('CTRLS4455');
   const presses = await ctrlS(u.page);
   expect(presses.length).toBeGreaterThanOrEqual(3);
   expect(presses.every(Boolean), JSON.stringify(presses)).toBe(true);
@@ -141,4 +141,23 @@ test('ONLYOFFICE: 보기 전용에서 Ctrl+S — 저장 창 없이 안내만', a
   await expect(g.page.locator('.toast')).toContainText('보기 전용');
   expect((await ctrlS(g.page)).every(Boolean)).toBe(true);
   expect((await api(owner, `/api/files/${f.id}`)).version).toBe(1);
+});
+
+test('엑셀: 셀에 입력하는 도중 Ctrl+S — 입력 중인 셀까지 바로 저장', async ({ browser }) => {
+  const u = await newUser(browser);
+  await watchSaveKey(u.ctx);
+  const f = await create(u, 'xlsx');
+  await openEditor(u.page, `id=${f.id}`);
+  const frame = u.page.frameLocator('iframe[name="frameEditor"]');
+  await frame.locator('#editor_sdk').waitFor();
+  await u.page.waitForTimeout(1500);
+  const box = await u.page.locator('iframe[name="frameEditor"]').boundingBox();
+  await u.page.mouse.click(box.x + box.width * 0.3, box.y + box.height * 0.4);
+  await u.page.keyboard.type('CELLSAVE9911', { delay: 30 });   // Enter 없이
+  await u.page.keyboard.press('Control+s');
+  await expect(u.page.locator('.toast.ok').first()).toContainText('저장했습니다', { timeout: 20_000 });
+  const csv = async () => { const c = await api(u, `/api/files/${f.id}/convert`, { method: 'POST', json: { to: 'csv' } }); return (await api(u, `/api/files/${c.id}/content`)).text(); };
+  expect(await csv()).toContain('CELLSAVE9911');
+  expect((await ctrlS(u.page)).every(Boolean)).toBe(true);
+  noErrors(u.errors);
 });

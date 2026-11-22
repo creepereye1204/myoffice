@@ -3,6 +3,8 @@
 uvicorn 단일 프로세스 기준 메모리 상태(재시작 시 비워지고 클라이언트가 자동 재접속한다).
 잠금 규칙: 편집 권한이 있는 사람 중 먼저 들어온 사람이 잠금을 가진다. 그 사람이 나가거나
 양보(release)하면 다음 편집 가능 접속자에게 넘어간다.
+잠금을 가진 사람의 연결이 (와이파이 끊김 등으로) 갑자기 끊기면 LOCK_GRACE 초 동안 잠금을 붙잡아 두고,
+그 안에 다시 연결되면 그대로 이어서 편집한다. 창을 닫아 정상적으로 나가면(bye) 바로 넘어간다.
 """
 from __future__ import annotations
 
@@ -10,6 +12,8 @@ import asyncio
 from dataclasses import dataclass, field
 
 from fastapi import WebSocket
+
+LOCK_GRACE = 10.0
 
 COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#db2777", "#65a30d"]
 
@@ -61,7 +65,8 @@ class Rooms:
                 r.lock = uid
         await self.presence(fid)
 
-    async def leave(self, fid: str, uid: str, sock: WebSocket) -> None:
+    async def leave(self, fid: str, uid: str, sock: WebSocket, grace: float | None = None) -> None:
+        grace = LOCK_GRACE if grace is None else grace
         async with self.mu:
             r = self.rooms.get(fid)
             if not r or uid not in r.members:
@@ -70,14 +75,34 @@ class Rooms:
             if sock in m.socks:
                 m.socks.remove(sock)
             if not m.socks:
-                del r.members[uid]
-                r.requests.discard(uid)
-                if r.lock == uid:
-                    r.lock = self._next(r)
-            if not r.members:
-                del self.rooms[fid]
+                if r.lock == uid and grace > 0:
+                    # 연결이 끊긴 편집자: 잠시 잠금 유지 → 다시 들어오면 그대로, 아니면 넘김
+                    asyncio.create_task(self._expire(fid, uid, grace))
+                    return
+                self._remove(fid, r, uid)
+            if fid not in self.rooms:
                 return
         await self.presence(fid)
+
+    async def _expire(self, fid: str, uid: str, grace: float) -> None:
+        await asyncio.sleep(grace)
+        async with self.mu:
+            r = self.rooms.get(fid)
+            m = r.members.get(uid) if r else None
+            if not m or m.socks:
+                return  # 이미 나갔거나 다시 연결됨
+            self._remove(fid, r, uid)
+            if fid not in self.rooms:
+                return
+        await self.presence(fid)
+
+    def _remove(self, fid: str, r: Room, uid: str) -> None:
+        del r.members[uid]
+        r.requests.discard(uid)
+        if r.lock == uid:
+            r.lock = self._next(r)
+        if not r.members:
+            del self.rooms[fid]
 
     async def release(self, fid: str, uid: str) -> None:
         async with self.mu:

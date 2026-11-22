@@ -24,7 +24,7 @@ import httpx
 import jwt
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -189,13 +189,23 @@ def read_meta(ws: str, fid: str) -> dict:
 
 def write_meta(ws: str, meta: dict) -> None:
     d = file_dir(ws, meta["id"])
-    tmp = d / "meta.json.tmp"
+    tmp = d / f"meta.json.{secrets.token_hex(4)}.tmp"
     tmp.write_text(json.dumps(meta, ensure_ascii=False))
     tmp.replace(d / "meta.json")
 
 
 def content_path(ws: str, meta: dict) -> Path:
     return file_dir(ws, meta["id"]) / f"content.{meta['ext']}"
+
+
+def file_bytes_response(ws: str, meta: dict, filename: Optional[str] = None, headers: Optional[dict] = None):
+    """파일을 한 번에 읽어서 보낸다. FileResponse 는 크기를 먼저 재고 나중에 읽어서, 그 사이 저장(파일 교체)이
+    끼어들면 'Content-Length 불일치'로 전송이 끊긴다 (변환기 다운로드 실패 code -4 의 원인)."""
+    from fastapi.responses import Response
+    h = dict(headers or {})
+    if filename:
+        h["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(filename)}"
+    return Response(content_path(ws, meta).read_bytes(), media_type="application/octet-stream", headers=h)
 
 
 def ws_usage(ws: str) -> tuple[int, int]:
@@ -239,7 +249,7 @@ def store_bytes(ws: str, meta: dict, data: bytes) -> dict:
     used, _ = ws_usage(ws)
     if used - old + len(data) > MAX_WS_BYTES:
         raise HTTPException(413, "작업공간 저장 용량을 초과했습니다")
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(f"{path.suffix}.{secrets.token_hex(4)}.tmp")  # 동시에 두 번 저장돼도 서로 안 섞이게
     tmp.write_bytes(data)
     tmp.replace(path)
     meta["size"] = len(data)
@@ -759,9 +769,8 @@ def delete(a: Access = Depends(owner)):
 @app.get("/api/files/{fid}/content")
 def content(a: Access = Depends(access)):
     meta = read_meta(a.ws, a.fid)
-    return FileResponse(content_path(a.ws, meta), media_type="application/octet-stream",
-                        headers={"X-File-Version": str(meta["version"]), "Cache-Control": "no-store",
-                                 "Access-Control-Expose-Headers": "X-File-Version"})
+    return file_bytes_response(a.ws, meta, headers={"X-File-Version": str(meta["version"]), "Cache-Control": "no-store",
+                                                    "Access-Control-Expose-Headers": "X-File-Version"})
 
 
 @app.put("/api/files/{fid}/content")
@@ -803,8 +812,7 @@ def download(ws: str, fid: str, exp: str, sig: str):
     if int(exp) < time.time():
         raise HTTPException(403, "link expired")
     meta = read_meta(ws, fid)
-    return FileResponse(content_path(ws, meta), filename=meta["name"],
-                        media_type="application/octet-stream")
+    return file_bytes_response(ws, meta, filename=meta["name"])
 
 
 # ---------------------------------------------------------------- ONLYOFFICE
@@ -863,7 +871,7 @@ def onlyoffice_config(mobile: bool = False, uid: Optional[str] = None, name: Opt
 def oo_download(ws: str, fid: str, sig: str):
     check_sig(sig, "oo-dl", ws, fid)
     meta = read_meta(ws, fid)
-    return FileResponse(content_path(ws, meta), media_type="application/octet-stream")
+    return file_bytes_response(ws, meta)
 
 
 def to_internal(url: str) -> str:
@@ -924,6 +932,8 @@ async def oo_callback(ws: str, fid: str, sig: str, request: Request):
         if status == 2:
             meta["version"] += 1  # 세션이 끝났으니 다음 편집은 새 key
         write_meta(ws, meta)
+        # 편집기 자체 저장(Ctrl+S 등)이 저장소에 반영됐음을 편집 화면에 알림 → '저장했습니다'
+        await rooms.broadcast(fid, {"type": "oo-saved", "forcesavetype": payload.get("forcesavetype")})
     return {"error": 0}
 
 
@@ -964,36 +974,53 @@ async def convert_bytes(ws: str, fid: str, meta: dict, to: str) -> bytes:
     return f.content
 
 
-async def flush_onlyoffice(ws: str, fid: str) -> dict:
-    """편집 중인 Office 문서면 강제 저장을 요청하고 잠깐 기다려 최신 내용으로 만든다."""
+async def forcesave(ws: str, fid: str, wait: float = 8) -> tuple[dict, bool]:
+    """편집 중인 Office 문서면 강제 저장을 요청하고 파일이 바뀔 때까지 기다린다.
+    돌려주는 값: (최신 메타, 저장소가 최신인지). 열려 있지 않거나 바뀐 게 없으면(error 4) 이미 최신."""
+    import asyncio
     meta = read_meta(ws, fid)
     key = f"{fid}_{meta['version']}"
     if key not in active_docs:
-        return meta
+        return meta, True
     body = {"c": "forcesave", "key": key}
     body["token"] = jwt.encode(dict(body), JWT_SECRET, algorithm="HS256")
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             res = (await c.post(f"{DS_INTERNAL_URL}command", json=body)).json()
-        if res.get("error") == 0:  # 저장 시작됨 → 콜백으로 파일이 바뀔 때까지 최대 8초
-            import asyncio
-            before = meta["modified"], meta["size"]
-            for _ in range(32):
-                await asyncio.sleep(0.25)
-                m = read_meta(ws, fid)
-                if (m["modified"], m["size"]) != before:
-                    return m
     except Exception:
-        pass
-    return read_meta(ws, fid)
+        return meta, False
+    if res.get("error") == 4:
+        return meta, True
+    if res.get("error") != 0:
+        return meta, False
+    def stamp():
+        m = read_meta(ws, fid)
+        try:
+            return m, (m["version"], content_path(ws, m).stat().st_mtime_ns)
+        except FileNotFoundError:
+            return m, (m["version"], 0)
+    _, before = stamp()
+    for _ in range(int(wait / 0.25)):  # 콜백(status 6)으로 파일이 바뀔 때까지
+        await asyncio.sleep(0.25)
+        m, now = stamp()
+        if now != before:
+            return m, True
+    return read_meta(ws, fid), False
+
+
+async def flush_onlyoffice(ws: str, fid: str) -> dict:
+    """변환·내보내기 전에 편집 중인 내용을 반영 (실패해도 진행)."""
+    return (await forcesave(ws, fid))[0]
 
 
 @app.post("/api/files/{fid}/save")
 async def save_now(a: Access = Depends(access)):
-    """편집 화면의 Ctrl+S — 열려 있는 Office 문서를 바로 저장소에 반영 (자동 저장을 기다리지 않음)."""
+    """편집 화면의 Ctrl+S — 열려 있는 Office 문서를 바로 저장소에 반영 (자동 저장을 기다리지 않음).
+    saved=false 면 확인하지 못한 것 (화면에 '저장 실패'로 알림)."""
     if not can_edit(a):
         raise HTTPException(403, "보기 전용입니다")
-    return public(await flush_onlyoffice(a.ws, a.fid))
+    meta, saved = await forcesave(a.ws, a.fid, wait=15)
+    return {**public(meta), "saved": saved}
 
 
 @app.post("/api/files/{fid}/convert")
@@ -1037,10 +1064,14 @@ async def file_socket(sock: WebSocket, fid: str, uid: str = "", name: str = "",
     uid, name = clean_user(f"u{user['id']}" if user else uid, user["name"] if user else name)
     await sock.accept()
     await rooms.join(fid, uid, name, sock, editor=can_edit(a))
+    grace = None  # 갑자기 끊김: 편집 잠금을 잠시 유지
     try:
         while True:
             msg = await sock.receive_json()
             t = msg.get("type")
+            if t == "bye":  # 창을 닫음 → 잠금을 바로 넘김
+                grace = 0
+                break
             if t == "ping":
                 await sock.send_json({"type": "pong"})
             elif t == "name":
@@ -1052,4 +1083,4 @@ async def file_socket(sock: WebSocket, fid: str, uid: str = "", name: str = "",
     except (WebSocketDisconnect, RuntimeError, ValueError):
         pass
     finally:
-        await rooms.leave(fid, uid, sock)
+        await rooms.leave(fid, uid, sock, grace=grace)
