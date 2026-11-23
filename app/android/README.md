@@ -8,7 +8,7 @@ WebView 껍데기 (Java, 외부 라이브러리 없음). `assets/www` 의 앱 �
 node app/prepare.mjs                       # app/build/www (도커 필요)
 cd app/android
 echo "sdk.dir=$HOME/android-sdk" > local.properties
-./gradlew assembleRelease                  # → app/build/outputs/apk/release/myoffice-1.0.0-release.apk
+./gradlew assembleRelease                  # → app/build/outputs/apk/release/myoffice-1.0.1-release.apk
 ```
 - 필요: JDK 17+, Android SDK platform 34 / build-tools 34.0.0
 - 서명: `keystore.properties` (storeFile, storePassword, keyAlias, keyPassword)가 있으면 그 키로, 없으면 디버그 키로 서명한다.
