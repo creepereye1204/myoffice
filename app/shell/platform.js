@@ -58,10 +58,17 @@ function android(a) {
     waits.set(id, { resolve, reject });
     a[method](id, ...args);
   });
-  const file = (r) => r && r.handle ? { handle: r.handle, name: r.name, bytes: r.data != null ? b64.dec(r.data) : undefined } : null;
+  // 읽은 내용은 Java 가 /__file/<토큰> 주소로 한 번 내준다 (큰 문서를 문자열로 바꾸지 않으려고)
+  const file = async (r) => {
+    if (!r || !r.handle) return null;
+    let bytes;
+    if (r.url) bytes = new Uint8Array(await (await fetch(r.url)).arrayBuffer());
+    else if (r.data != null) bytes = b64.dec(r.data);
+    return { handle: r.handle, name: r.name, bytes };
+  };
   let openCb = null, queued = [];
-  window.__openRequest = (json) => {
-    const f = file(typeof json === 'string' ? JSON.parse(json) : json);
+  window.__openRequest = async (json) => {
+    const f = await file(typeof json === 'string' ? JSON.parse(json) : json);
     if (!f) return;
     if (openCb) openCb(f); else queued.push(f);
   };
@@ -71,7 +78,7 @@ function android(a) {
     pickOpen: async () => file(await call('pickOpen')),
     read: async (h) => file(await call('read', h)),
     write: async (h, bytes) => { await call('write', h, b64.enc(bytes)); },
-    pickSave: async (name, bytes) => file(await call('pickSave', name, b64.enc(bytes))),
+    pickSave: async (name, bytes) => { const r = await call('pickSave', name, b64.enc(bytes)); return r && r.handle ? { handle: r.handle, name: r.name } : null; },
     onOpenRequest: (cb) => { openCb = cb; queued.splice(0).forEach(cb); a.ready(); },
     setDirty: (d) => a.setDirty(!!d),
     setTitle: () => {},
