@@ -30,6 +30,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -42,9 +43,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 알오피스 안드로이드 — assets/www 의 앱 화면을 WebView 로 띄운다. 인터넷 없이 기기 안에서만.
+ * 알오피스 안드로이드 — 웹 사이트 화면(assets/www, 앱 모드)을 WebView 로 띄운다. 인터넷 없이 기기 안에서만.
  *  - https://appassets.androidplatform.net/ 요청을 가로채 assets/www 파일로 답한다 (다른 주소는 막음).
- *  - window.AndroidBridge: 파일 열기/저장(저장소 접근 프레임워크), "다음 앱으로 열기"로 받은 문서 넘기기.
+ *  - window.AndroidBridge (frontend/public/local/platform.js 와 짝): 앱 폴더의 문서 목록·만들기·이름 바꾸기·삭제,
+ *    기기 다른 곳 파일 열기/저장(저장소 접근 프레임워크), "다음 앱으로 열기"로 받은 문서 넘기기.
  *    결과는 window.__bridgeDone(id, json) 으로 돌려준다. 읽은 파일 내용은 /__file/<토큰> 주소로 받아 가게 해서
  *    큰 문서도 문자열로 바꾸지 않는다. 쓰기는 base64 문자열로 받는다.
  */
@@ -115,15 +117,19 @@ public class MainActivity extends Activity {
             }
         });
         web.setWebViewClient(new WebViewClient() {
+            @Override public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) {
+                jsReady = false;   // 새 화면이 onOpenRequest 를 걸 때까지 열기 요청을 모아 둔다
+                dirty = false;
+            }
             @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest req) {
                 return serve(req.getUrl());
             }
             @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
                 Uri u = req.getUrl();
                 if (HOST.equals(u.getHost())) {
-                    // 앱 화면(/myoffice/) 밖으로 큰 창이 이동하지 않게 (편집기 iframe 안 이동은 그대로)
-                    String p = u.getPath() == null ? "" : u.getPath();
-                    return req.isForMainFrame() && !p.startsWith("/myoffice/");
+                    // 큰 창은 앱 화면(홈·편집)만 (편집기 iframe 안 이동은 그대로)
+                    String p = u.getPath() == null ? "/" : u.getPath();
+                    return req.isForMainFrame() && !(p.equals("/") || p.startsWith("/index") || p.startsWith("/edit"));
                 }
                 // 바깥 링크(도움말 등)는 브라우저로
                 try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (ActivityNotFoundException ignored) { }
@@ -132,8 +138,12 @@ public class MainActivity extends Activity {
         });
         setContentView(web);
         web.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        // 안드로이드 13+ : 새 방식 뒤로 가기 신호도 받는다 (기기·설정에 따라 키 이벤트가 오지 않음)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::goBack);
+        }
         handleIntent(getIntent());
-        web.loadUrl(ORIGIN + "/myoffice/index.html");
+        web.loadUrl(ORIGIN + "/");
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -153,7 +163,7 @@ public class MainActivity extends Activity {
     void deliverOpen(Uri uri) {
         io.execute(() -> {
             try {
-                JSONObject r = readDoc(uri);
+                JSONObject r = new JSONObject().put("handle", uri.toString()).put("name", nameOf(uri));
                 js("window.__openRequest(" + JSONObject.quote(r.toString()) + ")");
             } catch (Exception e) {
                 Log.e(TAG, "open", e);
@@ -162,11 +172,21 @@ public class MainActivity extends Activity {
         });
     }
 
+    // 뒤로 가기: 편집 화면 → (저장하고) 홈, 홈 → 앱 끝.
+    // 편집기 웹 페이지가 키를 먼저 가져가 버리므로(onBackPressed 가 안 불림) WebView 보다 먼저 가로챈다.
+    @Override public boolean dispatchKeyEvent(android.view.KeyEvent e) {
+        if (e.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK) {
+            Log.d(TAG, "back key " + e.getAction());
+            if (e.getAction() == android.view.KeyEvent.ACTION_UP && !e.isCanceled()) goBack();
+            return true;
+        }
+        return super.dispatchKeyEvent(e);
+    }
     @SuppressWarnings("deprecation")
-    @Override public void onBackPressed() {
-        web.evaluateJavascript("window.__onBack ? window.__onBack() : false", v -> {
-            if (!"true".equals(v)) super.onBackPressed();
-        });
+    @Override public void onBackPressed() { goBack(); }
+    void goBack() {
+        Log.d(TAG, "back");
+        web.evaluateJavascript("window.__onBack ? window.__onBack() : false", v -> { if (!"true".equals(v)) finish(); });
     }
 
     // ------------------------------------------------------------ 앱 파일 내주기
@@ -184,7 +204,6 @@ public class MainActivity extends Activity {
             if (b == null) return text(404, "gone");
             return new WebResourceResponse("application/octet-stream", null, 200, "OK", h, new ByteArrayInputStream(b));
         }
-        if (path.equals("/")) path = "/myoffice/index.html";
         AssetManager am = getAssets();
         String base = "www" + path.replaceAll("/+$", "");
         for (String c : new String[]{base, base + "/index.html", base + ".html"}) {
@@ -218,6 +237,46 @@ public class MainActivity extends Activity {
         } catch (SecurityException ignored) { }
     }
 
+    // 앱 폴더: Android/data/kr.myoffice.app/files/알오피스 (USB 로 PC 에 연결하면 보임)
+    File lib() {
+        File d = new File(getExternalFilesDir(null), "알오피스");
+        if (!d.isDirectory()) d.mkdirs();
+        return d;
+    }
+    static boolean isDoc(String n) {
+        int i = n.lastIndexOf('.');
+        if (i < 0 || n.startsWith(".")) return false;
+        String e = n.substring(i + 1).toLowerCase(Locale.ROOT);
+        return java.util.Arrays.asList("hwp", "hwpx", "docx", "doc", "odt", "rtf", "txt", "xlsx", "xls", "csv", "ods", "pptx", "ppt", "odp", "pdf").contains(e);
+    }
+    File freeFile(File dir, String name, File except) {
+        int i = name.lastIndexOf('.');
+        String base = i > 0 ? name.substring(0, i) : name, ext = i > 0 ? name.substring(i) : "";
+        for (int n = 1; ; n++) {
+            File f = new File(dir, n == 1 ? name : base + " (" + n + ")" + ext);
+            if (f.equals(except) || !f.exists()) return f;
+        }
+    }
+    static JSONObject fileInfo(File f) throws JSONException {
+        return new JSONObject().put("handle", Uri.fromFile(f).toString()).put("name", f.getName()).put("size", f.length()).put("mtime", f.lastModified());
+    }
+    JSONObject statOf(Uri uri) throws JSONException {
+        if ("file".equals(uri.getScheme())) {
+            File f = new File(uri.getPath());
+            return f.isFile() ? fileInfo(f) : null;
+        }
+        try (Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+            if (c == null || !c.moveToFirst()) return null;
+            int ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME), si = c.getColumnIndex(OpenableColumns.SIZE);
+            int mi = c.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED);
+            long mtime = mi >= 0 && !c.isNull(mi) ? c.getLong(mi) : 0;
+            return new JSONObject().put("name", ni >= 0 ? c.getString(ni) : nameOf(uri)).put("size", si >= 0 ? c.getLong(si) : 0)
+                .put("mtime", mtime > 0 ? mtime : System.currentTimeMillis());
+        } catch (SecurityException | IllegalArgumentException e) {
+            return null;   // 권한이 없어졌거나 지워짐
+        }
+    }
+
     String nameOf(Uri uri) {
         try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (c != null && c.moveToFirst()) { String n = c.getString(0); if (n != null) return n; }
@@ -235,7 +294,7 @@ public class MainActivity extends Activity {
         }
         String token = UUID.randomUUID().toString();
         synchronized (served) { served.put(token, out.toByteArray()); }
-        return new JSONObject().put("handle", uri.toString()).put("name", nameOf(uri)).put("url", "/__file/" + token);
+        return new JSONObject().put("url", "/__file/" + token);
     }
 
     void writeDoc(Uri uri, String b64) throws IOException {
@@ -262,7 +321,7 @@ public class MainActivity extends Activity {
         if (uri == null) { pendingSaveData = null; cancel(id); return; }
         takePermission(uri, data.getFlags() | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         if (req == REQ_OPEN) {
-            io.execute(() -> { try { done(id, readDoc(uri)); } catch (Exception e) { fail(id, e); } });
+            io.execute(() -> { try { done(id, new JSONObject().put("handle", uri.toString()).put("name", nameOf(uri))); } catch (Exception e) { fail(id, e); } });
         } else if (req == REQ_SAVE) {
             String b64 = pendingSaveData;
             pendingSaveData = null;
@@ -276,6 +335,53 @@ public class MainActivity extends Activity {
     }
 
     class Bridge {
+        @JavascriptInterface public String libraryDir() { return "내 휴대폰 · 알오피스 폴더"; }
+        @JavascriptInterface public void list(int id) {
+            io.execute(() -> {
+                try {
+                    org.json.JSONArray a = new org.json.JSONArray();
+                    File[] fs = lib().listFiles();
+                    if (fs != null) for (File f : fs) if (f.isFile() && isDoc(f.getName())) a.put(fileInfo(f));
+                    done(id, new JSONObject().put("files", a));
+                } catch (Exception e) { fail(id, e); }
+            });
+        }
+        @JavascriptInterface public void stat(int id, String handle) {
+            io.execute(() -> {
+                try { JSONObject st = statOf(Uri.parse(handle)); done(id, new JSONObject().put("stat", st == null ? JSONObject.NULL : st)); }
+                catch (Exception e) { fail(id, e); }
+            });
+        }
+        @JavascriptInterface public void create(int id, String name, String b64) {
+            io.execute(() -> {
+                try {
+                    File f = freeFile(lib(), new File(name).getName(), null);
+                    try (OutputStream o = new java.io.FileOutputStream(f)) { o.write(Base64.decode(b64, Base64.DEFAULT)); }
+                    done(id, new JSONObject().put("handle", Uri.fromFile(f).toString()).put("name", f.getName()));
+                } catch (Exception e) { fail(id, e); }
+            });
+        }
+        @JavascriptInterface public void rename(int id, String handle, String name) {
+            io.execute(() -> {
+                try {
+                    Uri u = Uri.parse(handle);
+                    if (!"file".equals(u.getScheme())) throw new IOException("기기의 다른 곳에 있는 파일은 앱에서 이름을 바꿀 수 없습니다");
+                    File from = new File(u.getPath());
+                    File to = freeFile(from.getParentFile(), new File(name).getName(), from);
+                    if (!to.equals(from) && !from.renameTo(to)) throw new IOException("이름을 바꾸지 못했습니다");
+                    done(id, new JSONObject().put("handle", Uri.fromFile(to).toString()).put("name", to.getName()));
+                } catch (Exception e) { fail(id, e); }
+            });
+        }
+        @JavascriptInterface public void remove(int id, String handle) {
+            io.execute(() -> {
+                try {
+                    Uri u = Uri.parse(handle);
+                    if ("file".equals(u.getScheme()) && !new File(u.getPath()).delete()) throw new IOException("지우지 못했습니다");
+                    done(id, new JSONObject().put("ok", true));
+                } catch (Exception e) { fail(id, e); }
+            });
+        }
         @JavascriptInterface public void pickOpen(int id) {
             ui.post(() -> {
                 pickId = id;

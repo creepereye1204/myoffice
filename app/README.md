@@ -1,44 +1,54 @@
 # 알오피스 앱 (서버 없이 기기 안에서)
 
-웹 사이트와 같은 편집기를 **인터넷·서버 없이** 쓰는 앱. 계정·공유·공동 편집은 없고, 내 기기의 파일을 열고 저장한다.
+**웹 사이트 화면을 그대로** 쓰는 앱. 서버 대신 기기 안에서 동작하고, 공유·실시간 공동 편집·계정은 없다.
 
-| 형식 | 편집기 | 저장 |
+| | 웹 사이트 | 앱 |
 |---|---|---|
-| hwp, hwpx | rhwp-studio (WebAssembly) | 같은 형식으로 |
-| docx, xlsx, pptx, csv | ONLYOFFICE 편집기 + x2t 변환기(WebAssembly) | 같은 형식으로, PDF 내보내기 |
-| doc, xls, ppt, odt, ods, odp, rtf, txt | 〃 | docx/xlsx/pptx 로 새로 저장 |
-| pdf | 〃 (보기·주석) | pdf |
+| 화면 | `frontend/public` | 같은 파일 (`common.js` 의 `LOCAL` 을 켬) |
+| 파일 저장 | 서버 | 기기의 알오피스 폴더 + 다른 곳에서 연 파일은 그 자리 |
+| 한글 (hwp·hwpx) | rhwp-studio | 같음 |
+| 워드·엑셀·피피티·한셀·한쇼 | ONLYOFFICE 문서 서버 | 오프라인 ONLYOFFICE + x2t 변환기(WebAssembly) |
+| 공유·실시간·계정 | 있음 | 없음 |
 
 ## 구조
 ```
+frontend/public/local/      앱 모드 (웹 화면이 LOCAL 일 때만 씀)
+  backend.js                /api/... 를 기기 안에서 처리 (응답 모양은 서버와 같음)
+  platform.js               기기 저장소: 데스크톱 nativeBridge / 안드로이드 AndroidBridge / 브라우저 IndexedDB
+  office.js                 오프라인 ONLYOFFICE 편집기·변환기 (iframe /document/editor.html)
 app/
-  shell/          앱 화면 (처음 화면·최근 문서·편집기 묶기·Ctrl+S) — 모든 플랫폼 공통
-    platform.js   기기 파일 읽기/쓰기 연결부 (데스크톱 nativeBridge / 안드로이드 AndroidBridge / 브라우저)
-  prepare.mjs     앱에 넣을 정적 파일을 build/www 로 모음 (도커 필요)
-  icons/          앱 아이콘 + 파일 형식별 아이콘 (make-icons.mjs 로 생성, out/ 은 저장소에 포함)
-  serve.mjs       build/www 를 브라우저로 확인하는 로컬 서버
-  test/smoke.mjs  앱 화면 검사 (새 문서·저장·엑셀 입력 중 저장·PDF·한글·hwpx·csv)
+  prepare.mjs               앱에 넣을 파일 → build/www (도커 필요)
+  serve.mjs                 build/www 를 브라우저로 확인하는 로컬 서버
+  icons/                    앱·파일 형식별 아이콘
+  test/make-corpus.sh       형식별 검사 문서 만들기 (한글·영문 글자 포함)
+  test/formats.mjs          모든 형식 자동 검사
+  test/desktop.mjs, android.mjs   플랫폼 실제 실행 검사
 ```
-플랫폼별 껍데기는 브랜치마다 따로 있다: `app-ubuntu`, `app-windows`, `app-android`.
+플랫폼별 껍데기는 브랜치마다: `app-ubuntu`, `app-windows` (`app/desktop`, Electron), `app-android` (`app/android`).
 
-## build/www 만들기
+## 만들기
 ```bash
-node app/prepare.mjs
+node app/prepare.mjs        # build/www (약 900MB, 글꼴이 대부분)
 ```
-- 오프라인 ONLYOFFICE: [ranuts/document](https://github.com/ranuts/document) 공식 이미지(digest 고정)에서 정적 파일만 꺼낸다.
-  편집기의 AI 도우미 엔진은 뺀다(`--keep-ai` 로 유지).
-- 한글 편집기: 이 저장소 `frontend/` 이미지를 빌드해서 rhwp-studio (글꼴 TTF 변환 끝난 것)를 꺼낸다.
-- 빈 문서 템플릿: 이 저장소 `api/` 이미지에서.
+- 웹 화면·한글 편집기: 이 저장소 `frontend/` 이미지
+- 오프라인 ONLYOFFICE: [ranuts/document](https://github.com/ranuts/document) 공식 이미지(digest 고정)를 `/document/` 에.
+  AI 도우미 엔진은 뺀다(`--keep-ai` 로 유지). 변환기 worker 경로 1곳을 고친다.
+- 빈 문서: 이 저장소 `api/` 이미지
 
-결과는 약 900MB (글꼴이 대부분). 설치 파일로 압축하면 데스크톱 약 340MB.
-
-## 브라우저로 확인
+## 검사
 ```bash
-node app/serve.mjs 8790 &          # http://127.0.0.1:8790/
-node app/test/smoke.mjs            # 7개 검사
+node app/serve.mjs 8790 &
+app/test/make-corpus.sh && node app/test/formats.mjs
 ```
+`formats.mjs` 는 docx·doc·odt·rtf·txt·pdf·xlsx·xls·ods·csv·pptx·ppt·odp·hwp·hwpx·옛 한글 인코딩(CP949) txt 를 하나씩
+① 가져오기 ② 오류 없이 열기 ③ 한글 글자 확인(편집기에서 꺼낸 문서와 PDF 둘 다) ④ 편집 가능한 형식은 입력·저장 후 다시 열어
+같은 형식에 남았는지까지 확인한다.
+
+## 알려진 제한
+- 앱에서는 한글 문서를 PDF·워드로 바꾸지 못한다 (오프라인 변환기에 HWP 읽기가 없음). 한글 인쇄는 데스크톱에서 된다.
+- txt 저장은 변환기가 한글을 잘라 써서, 앱이 docx 로 받아 글자만 UTF-8 로 저장한다 (서식 없음 — txt 이므로 원래 없음).
+- 옛 한글 인코딩(CP949) txt·csv 는 UTF-8 로 바꿔서 열고, 저장하면 UTF-8 로 저장된다.
 
 ## 라이선스
 앱에는 ONLYOFFICE 편집기(sdkjs, web-apps, x2t — AGPL-3.0, ranuts/document 경유)가 들어 있으므로
 앱 배포본은 AGPL-3.0 을 따른다 (이 저장소 소스 공개로 충족). rhwp 는 MIT, 글꼴은 각 글꼴 라이선스.
-배포 파일 안의 `www/LICENSE`, `www/NOTICE`, `www/licenses/` 에 원문이 들어 있다.
