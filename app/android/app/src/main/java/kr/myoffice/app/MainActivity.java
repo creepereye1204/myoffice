@@ -100,11 +100,15 @@ public class MainActivity extends Activity {
         s.setAllowContentAccess(false);
         s.setTextZoom(100);
         s.setMediaPlaybackRequiresUserGesture(true);
-        s.setSupportMultipleWindows(false);
+        // 새 창(window.open)은 받지 않는다 — 꺼 두면 WebView 가 앱 화면 자리에 그 페이지를 띄워 버린다
+        s.setSupportMultipleWindows(true);
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
         web.addJavascriptInterface(new Bridge(), "AndroidBridge");
         web.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onCreateWindow(WebView v, boolean dialog, boolean userGesture, android.os.Message msg) {
+                return false;
+            }
             @Override public boolean onConsoleMessage(ConsoleMessage m) {
                 Log.d(TAG, m.messageLevel() + " " + m.message() + " @" + m.sourceId() + ":" + m.lineNumber());
                 return true;
@@ -116,7 +120,11 @@ public class MainActivity extends Activity {
             }
             @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
                 Uri u = req.getUrl();
-                if (HOST.equals(u.getHost())) return false;
+                if (HOST.equals(u.getHost())) {
+                    // 앱 화면(/myoffice/) 밖으로 큰 창이 이동하지 않게 (편집기 iframe 안 이동은 그대로)
+                    String p = u.getPath() == null ? "" : u.getPath();
+                    return req.isForMainFrame() && !p.startsWith("/myoffice/");
+                }
                 // 바깥 링크(도움말 등)는 브라우저로
                 try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (ActivityNotFoundException ignored) { }
                 return true;

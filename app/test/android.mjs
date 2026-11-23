@@ -150,6 +150,38 @@ await step('인텐트로 열기 (VIEW, 파일 관리자에서 누른 것과 같�
   adb('shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-t', 'application/x-hwp', '-d', uri, '-n', `${PKG}/.MainActivity`);
   await page.waitForFunction(() => window.__app.cur?.name === 'and-sample.hwp', null, { timeout: 30_000 });
 });
+await step('편집기 다운로드(ODT) → 시스템 저장 화면 → 파일 생김', async () => {
+  await page.evaluate(() => window.__app.closeDoc());
+  adb('shell', 'rm', '-f', '/sdcard/Download/새*.odt');
+  await page.click('[data-new="hcell"]');
+  await page.frameLocator('#office').frameLocator('iframe[name="frameEditor"]').locator('#editor_sdk').waitFor({ timeout: 180_000 });
+  await page.locator('#loading').waitFor({ state: 'hidden', timeout: 180_000 });
+  if ((await page.locator('#doc-icon b').textContent()) !== '셀') throw new Error('한셀 아이콘 아님');
+  await page.evaluate(() => window.__app.closeDoc());
+  await page.click('[data-new="docx"]');
+  const fe = page.frameLocator('#office').frameLocator('iframe[name="frameEditor"]');
+  await fe.locator('#editor_sdk').waitFor({ timeout: 180_000 });
+  await page.locator('#loading').waitFor({ state: 'hidden', timeout: 180_000 });
+  await sleep(2000);
+  await fe.locator('#file, li[data-tab="file"]').first().click();
+  await sleep(1000);
+  await fe.locator('.btn-doc-format[format="67"]').first().click();
+  await sleep(3000);
+  await tapText(/^(SAVE|Save|저장)$/);
+  await sleep(2000);
+  const ls = adb('shell', 'ls', '/sdcard/Download/');
+  if (!/\.odt/.test(ls)) throw new Error(`odt 없음: ${ls}`);
+});
+await step('수정한 채 뒤로 가기 → 저장 안 할지 확인', async () => {
+  const box = await page.locator('#editors').boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.4);
+  await page.keyboard.type('DIRTY', { delay: 50 });
+  await page.waitForFunction(() => window.__app.dirty, null, { timeout: 15_000 });
+  for (let i = 0; i < 2; i++) { adb('shell', 'input', 'keyevent', 'KEYCODE_BACK'); await sleep(1500); }
+  await tapText(/^(Cancel|취소)$/);
+  await sleep(800);
+  if (!(await page.evaluate(() => !!window.__app.cur))) throw new Error('취소했는데 문서가 닫힘');
+});
 await page.screenshot({ path: path.join(HERE, 'android-last.png') }).catch(() => {});
 await browser.close().catch(() => {});
 for (const r of results) console.log(r.join('\t'));
