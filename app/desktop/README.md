@@ -7,13 +7,13 @@ Electron 껍데기. 앱 파일(`../build/www`)을 `https://app.myoffice.localhos
 node app/prepare.mjs                 # ../build/www (도커 필요)
 cd app/desktop && npm ci
 npx electron-builder --linux deb AppImage
-# → dist/myoffice-1.0.1-amd64.deb, dist/myoffice-1.0.1-x86_64.AppImage
+# → dist/myoffice-1.1.0-amd64.deb, dist/myoffice-1.1.0-x86_64.AppImage
 ```
 개발 실행: `npm start` · 실제 실행 검사: `xvfb-run -a node ../test/desktop.mjs [dist/linux-unpacked/myoffice]`
 
 ## 설치
 ```bash
-sudo apt install ./myoffice-1.0.1-amd64.deb
+sudo apt install ./myoffice-1.1.0-amd64.deb
 ```
 - 메뉴에 **알오피스**, 터미널에서 `myoffice 파일.hwp`
 - 파일 연결: hwp·hwpx·docx·doc·odt·rtf·xlsx·xls·ods·pptx·ppt·odp 를 더블클릭/"다른 앱으로 열기"로 열 수 있다.

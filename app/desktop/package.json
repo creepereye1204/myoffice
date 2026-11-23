@@ -1,7 +1,7 @@
 {
   "name": "myoffice",
   "productName": "myoffice",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "알오피스 — 인터넷 없이 쓰는 한글·워드·엑셀·파워포인트 편집기",
   "homepage": "https://github.com/creepereye1204/myoffice",
   "author": { "name": "creepereye", "email": "noreply@users.noreply.github.com" },
