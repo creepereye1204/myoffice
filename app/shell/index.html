@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>알오피스</title>
+  <link rel="icon" href="icon.svg">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header id="bar">
+    <button id="home" class="brand" type="button" title="처음 화면"><img src="icon.svg" alt=""><span>알오피스</span></button>
+    <div id="doc" hidden>
+      <span id="doc-icon"></span>
+      <span id="doc-name"></span>
+      <span id="status" aria-live="polite"></span>
+    </div>
+    <div class="spacer"></div>
+    <div id="doc-actions" hidden>
+      <button id="save" type="button" class="primary" title="저장 (Ctrl+S)">저장</button>
+      <button id="more" type="button" class="icon" title="더 보기" aria-haspopup="menu">⋯</button>
+      <div id="more-menu" class="menu" role="menu" hidden>
+        <button type="button" data-act="save-as" role="menuitem">다른 이름으로 저장…</button>
+        <button type="button" data-act="pdf" role="menuitem">PDF로 내보내기…</button>
+        <button type="button" data-act="close" role="menuitem">문서 닫기</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="start">
+    <section>
+      <h2>새로 만들기</h2>
+      <div id="new-list" class="tiles"></div>
+    </section>
+    <section>
+      <div class="row">
+        <h2>최근 문서</h2>
+        <button id="open" type="button" class="primary">파일 열기…</button>
+      </div>
+      <ul id="recent"></ul>
+      <p class="hint">한글(hwp·hwpx), 워드(docx·doc·odt·rtf·txt), 엑셀(xlsx·xls·csv·ods), 파워포인트(pptx·ppt·odp), PDF를 열 수 있습니다.
+        모든 작업은 이 기기 안에서만 처리되고 인터넷이 없어도 됩니다.</p>
+    </section>
+  </main>
+
+  <div id="editors" hidden>
+    <div id="hwp" hidden></div>
+    <iframe id="office" hidden title="문서 편집기"></iframe>
+    <div id="loading" hidden><div class="spinner"></div><p>문서를 여는 중…</p></div>
+  </div>
+
+  <div id="drop" hidden><p>여기에 놓으면 엽니다</p></div>
+  <div id="toasts"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
