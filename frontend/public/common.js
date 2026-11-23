@@ -1,5 +1,11 @@
 // 공통: API 호출 + 로그인 세션
 // www.<도메인> 에서는 api.<도메인> 을 쓰고, 그 외(로컬 등)는 같은 출처 /api 프록시
+//
+// 앱 모드(LOCAL): 서버 없이 기기 안에서. api() 가 local/backend.js 로 가고, 계정·공유·실시간 기능은 없다.
+// 앱 빌드(app/prepare.mjs)가 아래 false 를 true 로 바꾼다. 앱 껍데기가 bridge 를 넣어 줘도 켜진다.
+export const LOCAL = /*@LOCAL*/false || !!(window.nativeBridge || window.AndroidBridge);
+const local = () => import('./local/backend.js');
+const localPlatform = async () => (await import('./local/platform.js')).platform;
 export const API_BASE = location.hostname.startsWith('www.') ? `https://api.${location.hostname.slice(4)}` : '';
 const TOKEN_KEY = 'rhwp.token';
 const ME_KEY = 'rhwp.me';
@@ -17,6 +23,7 @@ export function goLogin() {
 
 /** 로그인 필수 페이지: 세션 확인, 없으면 로그인 화면으로 */
 export async function requireLogin() {
+  if (LOCAL) return api('/api/auth/me');
   if (!getToken()) { goLogin(); return new Promise(() => {}); }
   try {
     const me = await api('/api/auth/me');
@@ -35,6 +42,7 @@ export function getShare() { return SHARE; }
 
 // 공동 편집 표시용 사용자. 로그인하면 계정 기준(u<id>), 아니면 브라우저별 임시 id
 export function getUser() {
+  if (LOCAL) return { uid: 'local', name: '나', account: true };
   const me = getToken() && cachedMe();
   if (me) return { uid: `u${me.id}`, name: me.name, account: true };
   let u = null;
@@ -53,6 +61,7 @@ export function setUserName(name) {
 }
 
 export async function api(path, opts = {}) {
+  if (LOCAL) return (await local()).api(path, opts);
   const headers = { ...(opts.headers || {}) };
   const t = getToken();
   if (t) headers.Authorization = `Bearer ${t}`;
@@ -90,6 +99,11 @@ export async function logout() {
 
 /** 저장하지 않고 다른 형식(PDF 등)으로 바로 내려받기 */
 export async function exportAs(id, to) {
+  if (LOCAL) {
+    const r = await api(`/api/files/${id}/export`, { method: 'POST', body: { to } });
+    const name = decodeURIComponent((r.headers.get('content-disposition').match(/filename\*=UTF-8''([^;]+)/) || [])[1] || `document.${to}`);
+    return saveToDevice(name, new Uint8Array(await r.arrayBuffer()));
+  }
   const r = await api(`/api/files/${id}/export`, { method: 'POST', body: { to } });
   const blob = await r.blob();
   const cd = r.headers.get('content-disposition') || '';
@@ -100,7 +114,18 @@ export async function exportAs(id, to) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
+/** 앱 모드: 기기에 저장 (위치를 묻는 창). 저장하면 true */
+export async function saveToDevice(name, bytes) {
+  const r = await (await localPlatform()).pickSave(name, bytes);
+  if (r) toast(`${r.name} 저장했습니다`, 'ok');
+  return !!r;
+}
+
 export async function download(id) {
+  if (LOCAL) {
+    const f = await api(`/api/files/${id}`);
+    return saveToDevice(f.name, await (await local()).readFile(id));
+  }
   const { url, name } = await api(`/api/files/${id}/download-link`);
   const a = document.createElement('a');
   a.href = `${API_BASE}${url}`;
@@ -158,6 +183,7 @@ export function fmtTime(sec) {
 
 // 실시간 소켓 (자동 재접속 + 20초 핑 — 프록시 유휴 타임아웃 방지)
 export function connectRoom(fileId, onMsg, onState = () => {}) {
+  if (LOCAL) return { send() {}, close() {}, bye() {} };   // 앱: 혼자 쓰므로 실시간 방 없음
   const base = API_BASE || location.origin;
   const u = getUser();
   const q = new URLSearchParams({ uid: u.uid, name: u.name || '손님' });

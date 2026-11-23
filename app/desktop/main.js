@@ -1,7 +1,7 @@
 // 알오피스 데스크톱 (우분투·윈도우) — 인터넷/서버 없이 기기 안에서 문서 편집
-//   화면: resources/www (app/prepare.mjs 가 모은 파일) 를 https://app.myoffice.localhost/ 로 내준다.
+//   화면: 웹 사이트 화면 그대로 (resources/www, app/prepare.mjs) 를 https://app.myoffice.localhost/ 로 내준다.
 //         (네트워크로 나가지 않고 앱이 직접 응답. 한글 편집기는 http(s) 주소만 받아서 https 를 가로챈다)
-//   파일: 열기/저장 대화상자, 경로로 바로 읽고 쓰기 (preload.js 의 nativeBridge)
+//   파일: 문서/알오피스 폴더 + 기기 다른 곳에서 연 파일 (preload.js 의 nativeBridge → frontend/public/local/platform.js)
 //   "이 앱으로 열기": 실행 인자 / 이미 켜져 있으면 두 번째 실행의 인자를 받아 연다.
 const { app, BrowserWindow, protocol, ipcMain, dialog, shell, Menu, net } = require('electron');
 const path = require('node:path');
@@ -47,7 +47,6 @@ function resolve(urlPath) {
 function serve(req) {
   const url = new URL(req.url);
   if (url.host !== HOST) return net.fetch(req, { bypassCustomProtocolHandlers: true });  // 다른 주소는 그대로
-  if (url.pathname === '/') return Response.redirect(`${ORIGIN}/myoffice/`, 302);
   const file = resolve(decodeURIComponent(url.pathname));
   if (!file) return new Response('not found', { status: 404, headers: HEADERS });
   const type = file.endsWith('x2t.wasm.br') ? 'application/wasm' : (MIME[path.extname(file).slice(1).toLowerCase()] || 'application/octet-stream');
@@ -58,9 +57,24 @@ function serve(req) {
 }
 
 // ---------------------------------------------------------------- 파일
-async function readDoc(p) {
-  const bytes = await fsp.readFile(p);
-  return { handle: p, name: path.basename(p), bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength) };
+// 알오피스 폴더: 문서/알오피스 (윈도우: 문서\알오피스)
+const LIB = process.env.MYOFFICE_LIBRARY || path.join(app.getPath('documents'), '알오피스');   // 검사는 임시 폴더로
+const DOC_EXT = new Set(EXTS);
+const isDoc = (name) => DOC_EXT.has(path.extname(name).slice(1).toLowerCase()) && !name.startsWith('.') && !name.startsWith('~$');
+async function readBytes(p) {
+  const b = await fsp.readFile(p);
+  return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+}
+async function statOf(p) {
+  try { const st = await fsp.stat(p); return st.isFile() ? { name: path.basename(p), size: st.size, mtime: st.mtimeMs } : null; } catch { return null; }
+}
+// 이름이 겹치면 "이름 (2).확장자"
+function freeName(dir, name, except) {
+  const ext = path.extname(name), base = name.slice(0, name.length - ext.length);
+  for (let i = 1; ; i++) {
+    const p = path.join(dir, i === 1 ? name : `${base} (${i})${ext}`);
+    if (p === except || !fs.existsSync(p)) return p;
+  }
 }
 // 저장 도중 꺼져도 원래 파일이 깨지지 않게: 같은 폴더 임시 파일에 쓰고 바꿔치기
 async function writeAtomic(p, bytes) {
@@ -117,10 +131,12 @@ function createWindow(openPaths = []) {
   });
   // 앱 화면 밖으로 이동하지 않음 (파일을 창에 떨어뜨리는 등)
   win.webContents.on('will-navigate', (e, url) => {
-    if (url.startsWith(ORIGIN + '/myoffice/')) return;
+    if (url.startsWith(ORIGIN + '/')) return;
     e.preventDefault();
     if (/^https?:/.test(url) && !url.startsWith(ORIGIN)) shell.openExternal(url);
   });
+  // 페이지가 바뀌면 (홈 ↔ 편집) 새 페이지가 준비될 때까지 "이 앱으로 열기"를 모아 둔다
+  win.webContents.on('did-start-navigation', (e) => { if (e.isMainFrame && !e.isSameDocument) { win.__ready = false; win.__dirty = false; } });
   // 저장 확인은 앱이 직접 한다 — 편집기(iframe)의 beforeunload 가 창 닫기를 몰래 막지 않게
   win.webContents.on('will-prevent-unload', (e) => e.preventDefault());
   // 닫기 전 저장 확인
@@ -140,7 +156,7 @@ function createWindow(openPaths = []) {
     // 이미 확인했으니 바로 닫는다 (close() 는 편집기 iframe 정리에 몇 초 걸림)
     win.destroy();
   });
-  win.loadURL(`${ORIGIN}/myoffice/`);
+  win.loadURL(`${ORIGIN}/`);
   return win;
 }
 async function openInWindow(paths) {
@@ -150,7 +166,8 @@ async function openInWindow(paths) {
   const first = paths[0];
   const rest = paths.slice(1);
   if (!win) { createWindow(paths); return; }
-  const busy = await win.webContents.executeJavaScript('!!window.__app?.cur').catch(() => true);
+  // 문서를 편집 중인 창이면 새 창에서 연다
+  const busy = new URL(win.webContents.getURL() || ORIGIN).pathname.startsWith('/edit');
   if (busy) createWindow([first]); else deliver(win, first);
   for (const p of rest) createWindow([p]);
   if (win.isMinimized()) win.restore();
@@ -158,19 +175,47 @@ async function openInWindow(paths) {
 }
 async function deliver(win, p) {
   if (!win.__ready) { win.__queue.push(p); return; }
-  try { win.webContents.send('open-request', await readDoc(p)); } catch (e) { dialog.showErrorBox('알오피스', `열 수 없습니다: ${p}\n${e.message}`); }
+  win.webContents.send('open-request', { handle: p, name: path.basename(p) });
 }
 
 // ---------------------------------------------------------------- IPC (preload.js 와 짝)
 const winOf = (e) => BrowserWindow.fromWebContents(e.sender);
+ipcMain.on('libraryDir', (e) => { fs.mkdirSync(LIB, { recursive: true }); e.returnValue = LIB; });
+ipcMain.handle('list', async () => {
+  fs.mkdirSync(LIB, { recursive: true });
+  const out = [];
+  for (const name of await fsp.readdir(LIB)) {
+    if (!isDoc(name)) continue;
+    const st = await statOf(path.join(LIB, name));
+    if (st) out.push({ handle: path.join(LIB, name), ...st });
+  }
+  return out;
+});
+ipcMain.handle('stat', (_e, p) => statOf(p));
+ipcMain.handle('read', (_e, p) => readBytes(p));
+ipcMain.handle('write', (_e, p, bytes) => writeAtomic(p, bytes));
+ipcMain.handle('create', async (_e, name, bytes) => {
+  fs.mkdirSync(LIB, { recursive: true });
+  const p = freeName(LIB, path.basename(name));
+  await fsp.writeFile(p, Buffer.from(bytes), { flag: 'wx' });
+  return { handle: p, name: path.basename(p) };
+});
+ipcMain.handle('rename', async (_e, p, name) => {
+  const to = freeName(path.dirname(p), path.basename(name), p);
+  if (to !== p) await fsp.rename(p, to);
+  return { handle: to, name: path.basename(to) };
+});
+// 휴지통으로 (검사할 때는 MYOFFICE_NO_TRASH=1 로 바로 지움)
+ipcMain.handle('remove', async (_e, p) => {
+  if (process.env.MYOFFICE_NO_TRASH === '1') return fsp.rm(p);
+  try { await shell.trashItem(p); } catch (e) { throw new Error(`휴지통으로 옮기지 못했습니다: ${e.message}`); }
+});
 ipcMain.handle('pickOpen', async (e) => {
   const r = await dialog.showOpenDialog(winOf(e), { defaultPath: lastDir, properties: ['openFile'], filters: FILTERS });
   if (r.canceled || !r.filePaths[0]) return null;
   lastDir = path.dirname(r.filePaths[0]);
-  return readDoc(r.filePaths[0]);
+  return { handle: r.filePaths[0], name: path.basename(r.filePaths[0]) };
 });
-ipcMain.handle('read', (_e, p) => readDoc(p));
-ipcMain.handle('write', (_e, p, bytes) => writeAtomic(p, bytes));
 ipcMain.handle('pickSave', async (e, name, bytes) => {
   const ext = path.extname(name).slice(1).toLowerCase();
   const r = await dialog.showSaveDialog(winOf(e), {
@@ -187,7 +232,7 @@ ipcMain.handle('pickSave', async (e, name, bytes) => {
 });
 ipcMain.on('setDirty', (e, d) => { const w = winOf(e); if (w) { w.__dirty = d; w.setDocumentEdited?.(d); } });
 ipcMain.on('setTitle', (e, t) => winOf(e)?.setTitle(t));
-ipcMain.on('showInFolder', (_e, p) => shell.showItemInFolder(p));
+ipcMain.on('reveal', (_e, p) => { if (p) shell.showItemInFolder(p); else shell.openPath(LIB); });
 ipcMain.on('ready', async (e) => {
   const w = winOf(e);
   if (!w) return;
