@@ -1,0 +1,169 @@
+{
+  "name": "myoffice",
+  "productName": "MyOffice",
+  "version": "1.0.0",
+  "description": "알오피스 — 인터넷 없이 쓰는 한글·워드·엑셀·파워포인트 편집기",
+  "homepage": "https://github.com/creepereye1204/myoffice",
+  "author": {
+    "name": "creepereye",
+    "email": "noreply@users.noreply.github.com"
+  },
+  "license": "AGPL-3.0-only",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis portable --x64"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "kr.myoffice.app",
+    "artifactName": "myoffice-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "res"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "res/app.png",
+      "package.json"
+    ],
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "../build/www",
+        "to": "www"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "res/icon.ico",
+      "executableName": "MyOffice",
+      "legalTrademarks": "",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "알오피스",
+      "uninstallDisplayName": "알오피스",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "res/icon.ico",
+      "uninstallerIcon": "res/icon.ico",
+      "artifactName": "MyOffice-Setup-${version}.${ext}",
+      "language": "1042",
+      "installerLanguages": [
+        "ko_KR"
+      ],
+      "multiLanguageInstaller": false
+    },
+    "portable": {
+      "artifactName": "MyOffice-Portable-${version}.${ext}"
+    },
+    "fileAssociations": [
+      {
+        "ext": "hwp",
+        "name": "MyOffice.hwp",
+        "description": "한글 문서",
+        "icon": "filetypes/hwp.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "hwpx",
+        "name": "MyOffice.hwpx",
+        "description": "한글 문서 (HWPX)",
+        "icon": "filetypes/hwpx.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "docx",
+        "name": "MyOffice.docx",
+        "description": "워드 문서",
+        "icon": "filetypes/docx.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "doc",
+        "name": "MyOffice.doc",
+        "description": "워드 97-2003 문서",
+        "icon": "filetypes/doc.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "odt",
+        "name": "MyOffice.odt",
+        "description": "ODF 텍스트 문서",
+        "icon": "filetypes/odt.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "rtf",
+        "name": "MyOffice.rtf",
+        "description": "서식 있는 텍스트",
+        "icon": "filetypes/rtf.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "xlsx",
+        "name": "MyOffice.xlsx",
+        "description": "엑셀 통합 문서",
+        "icon": "filetypes/xlsx.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "xls",
+        "name": "MyOffice.xls",
+        "description": "엑셀 97-2003 통합 문서",
+        "icon": "filetypes/xls.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "ods",
+        "name": "MyOffice.ods",
+        "description": "ODF 스프레드시트",
+        "icon": "filetypes/ods.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "pptx",
+        "name": "MyOffice.pptx",
+        "description": "파워포인트 프레젠테이션",
+        "icon": "filetypes/pptx.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "ppt",
+        "name": "MyOffice.ppt",
+        "description": "파워포인트 97-2003 프레젠테이션",
+        "icon": "filetypes/ppt.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "odp",
+        "name": "MyOffice.odp",
+        "description": "ODF 프레젠테이션",
+        "icon": "filetypes/odp.ico",
+        "role": "Editor"
+      }
+    ]
+  }
+}
