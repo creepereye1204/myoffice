@@ -1,0 +1,64 @@
+{
+  "name": "myoffice",
+  "productName": "myoffice",
+  "version": "1.0.0",
+  "description": "알오피스 — 인터넷 없이 쓰는 한글·워드·엑셀·파워포인트 편집기",
+  "homepage": "https://github.com/creepereye1204/myoffice",
+  "author": { "name": "creepereye", "email": "noreply@users.noreply.github.com" },
+  "license": "AGPL-3.0-only",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --linux deb AppImage"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "kr.myoffice.app",
+    "artifactName": "myoffice-${version}-${arch}.${ext}",
+    "directories": { "output": "dist", "buildResources": "res" },
+    "files": ["main.js", "preload.js", "res/app.png", "package.json"],
+    "asar": true,
+    "extraResources": [
+      { "from": "../build/www", "to": "www" },
+      { "from": "../icons/out/png", "to": "icons/png" },
+      { "from": "linux/zz-myoffice.xml", "to": "icons/zz-myoffice.xml" }
+    ],
+    "linux": {
+      "target": ["deb", "AppImage"],
+      "executableName": "myoffice",
+      "icon": "res/icons",
+      "category": "Office",
+      "synopsis": "한글·워드·엑셀·파워포인트 편집기 (오프라인)",
+      "mimeTypes": [
+        "application/x-hwp", "application/x-hwpx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword",
+        "application/vnd.oasis.opendocument.text", "application/rtf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/vnd.ms-powerpoint",
+        "application/vnd.oasis.opendocument.presentation",
+        "text/csv", "application/pdf", "text/plain"
+      ],
+      "desktop": {
+        "Name": "알오피스",
+        "Name[ko]": "알오피스",
+        "GenericName": "오피스",
+        "Comment": "한글·워드·엑셀·파워포인트 문서 편집 (인터넷 없이)",
+        "Keywords": "hwp;hwpx;한글;워드;엑셀;파워포인트;office;docx;xlsx;pptx;",
+        "StartupWMClass": "myoffice"
+      }
+    },
+    "deb": {
+      "packageName": "myoffice",
+      "afterInstall": "linux/after-install.sh",
+      "afterRemove": "linux/after-remove.sh",
+      "depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0", "shared-mime-info"],
+      "compression": "xz"
+    },
+    "appImage": { "license": null }
+  }
+}

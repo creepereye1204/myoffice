@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 알오피스: 문서 형식별 아이콘 (설치 시 /usr/share/mime/packages 로 복사) -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-hwp">
+    <icon name="myoffice-hwp"/>
+  </mime-type>
+  <mime-type type="application/x-hwpx">
+    <comment>한글 문서 (HWPX)</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.hwpx"/>
+    <icon name="myoffice-hwpx"/>
+  </mime-type>
+  <mime-type type="application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+    <icon name="myoffice-docx"/>
+  </mime-type>
+  <mime-type type="application/msword">
+    <icon name="myoffice-doc"/>
+  </mime-type>
+  <mime-type type="application/vnd.oasis.opendocument.text">
+    <icon name="myoffice-odt"/>
+  </mime-type>
+  <mime-type type="application/rtf">
+    <icon name="myoffice-rtf"/>
+  </mime-type>
+  <mime-type type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+    <icon name="myoffice-xlsx"/>
+  </mime-type>
+  <mime-type type="application/vnd.ms-excel">
+    <icon name="myoffice-xls"/>
+  </mime-type>
+  <mime-type type="application/vnd.oasis.opendocument.spreadsheet">
+    <icon name="myoffice-ods"/>
+  </mime-type>
+  <mime-type type="application/vnd.openxmlformats-officedocument.presentationml.presentation">
+    <icon name="myoffice-pptx"/>
+  </mime-type>
+  <mime-type type="application/vnd.ms-powerpoint">
+    <icon name="myoffice-ppt"/>
+  </mime-type>
+  <mime-type type="application/vnd.oasis.opendocument.presentation">
+    <icon name="myoffice-odp"/>
+  </mime-type>
+</mime-info>
