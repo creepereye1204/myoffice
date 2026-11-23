@@ -87,6 +87,22 @@ await step('이미 켜진 앱에 두 번째 실행으로 파일 넘기기', asyn
   await app.evaluate(({ app }, p) => app.emit('second-instance', {}, ['myoffice', p], ''), hwpPath);
   await page.waitForFunction(() => window.__app?.cur?.name === '테스트 문서.hwp', null, { timeout: 30_000 });
 });
+const SKIP_PRINT = process.env.SKIP_PRINT; if (!SKIP_PRINT) await step('한글 인쇄 → 앱 안에 인쇄 창 (바깥 브라우저 아님)', async () => {
+  await page.locator('#loading').waitFor({ state: 'hidden', timeout: 60_000 });
+  await app.evaluate(({ shell }) => { globalThis.__ext = []; shell.openExternal = async (u) => { globalThis.__ext.push(u); }; });
+  const before = (await app.windows()).length;
+  const f = page.frameLocator('#hwp iframe');
+  await f.locator('.menu-item[data-menu="file"] > .menu-title').click();
+  await page.waitForTimeout(300);
+  await f.locator('[data-cmd="file:print"]').click();
+  await page.waitForTimeout(4000);
+  const ext = await app.evaluate(() => globalThis.__ext);
+  if (ext.length) throw new Error(`바깥 브라우저로 열림: ${ext}`);
+  const wins = await app.windows();
+  if (wins.length <= before) throw new Error('인쇄 창이 안 열림');
+  for (const w of wins.slice(before)) await w.close().catch(() => {});
+  await page.bringToFront();
+});
 await step('수정 후 닫으면 저장 확인', async () => {
   await page.locator('#loading').waitFor({ state: 'hidden', timeout: 60_000 });
   await page.waitForTimeout(800);
@@ -101,6 +117,16 @@ await step('수정 후 닫으면 저장 확인', async () => {
     return asked && BrowserWindow.getAllWindows().length === 1;
   });
   if (!asked) throw new Error('확인 없이 닫힘');
+});
+await step('저장 안 함을 고르면 실제로 닫힘 (앱 종료)', async () => {
+  const exited = app.waitForEvent('close', { timeout: 15_000 });
+  await app.evaluate(({ BrowserWindow, dialog }) => {
+    dialog.showMessageBox = async () => ({ response: 1 });   // 저장 안 함
+    for (const w of BrowserWindow.getAllWindows()) setTimeout(() => w.close(), 0);
+  });
+  const t = Date.now();
+  await exited;
+  if (Date.now() - t > 5000) throw new Error(`닫히는 데 ${Date.now() - t}ms`);
 });
 await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
 fs.rmSync(tmp, { recursive: true, force: true });

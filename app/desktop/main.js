@@ -104,11 +104,25 @@ function createWindow(openPaths = []) {
   win.once('ready-to-show', () => win.show());
   win.on('closed', () => wins.delete(win));
   // 바깥 링크는 기본 브라우저로
+  // 새 창: 편집기의 인쇄·미리보기(about:blank, blob:, 앱 주소)는 앱 안에서, 바깥 링크는 기본 브라우저로
   win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url === 'about:blank' || url.startsWith('blob:') || url.startsWith(ORIGIN + '/')) {
+      return { action: 'allow', overrideBrowserWindowOptions: {
+        width: 1000, height: 800, autoHideMenuBar: true, icon: path.join(__dirname, 'res', 'app.png'),
+        webPreferences: { contextIsolation: true, sandbox: true },
+      } };
+    }
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-  win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith(ORIGIN)) { e.preventDefault(); if (/^https?:/.test(url)) shell.openExternal(url); } });
+  // 앱 화면 밖으로 이동하지 않음 (파일을 창에 떨어뜨리는 등)
+  win.webContents.on('will-navigate', (e, url) => {
+    if (url.startsWith(ORIGIN + '/myoffice/')) return;
+    e.preventDefault();
+    if (/^https?:/.test(url) && !url.startsWith(ORIGIN)) shell.openExternal(url);
+  });
+  // 저장 확인은 앱이 직접 한다 — 편집기(iframe)의 beforeunload 가 창 닫기를 몰래 막지 않게
+  win.webContents.on('will-prevent-unload', (e) => e.preventDefault());
   // 닫기 전 저장 확인
   win.on('close', async (e) => {
     if (!win.__dirty || win.__closing) return;
@@ -123,7 +137,8 @@ function createWindow(openPaths = []) {
       if (!ok) return;
     }
     win.__closing = true;
-    win.close();
+    // 이미 확인했으니 바로 닫는다 (close() 는 편집기 iframe 정리에 몇 초 걸림)
+    win.destroy();
   });
   win.loadURL(`${ORIGIN}/myoffice/`);
   return win;
