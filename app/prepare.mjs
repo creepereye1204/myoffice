@@ -61,6 +61,8 @@ walk(OUT, (p) => {
   if (/\.(br|gz)$/.test(p) || (/\.woff2?$/.test(p) && (fs.existsSync(`${p}.ttf`) || fs.existsSync(`${p}.otf`)))) fs.rmSync(p);
 });
 replaceIn(path.join(OUT, 'common.js'), '/*@LOCAL*/false', 'true');
+// 한글 편집기의 서비스 워커(오프라인 캐시)는 앱에서 필요 없고, 안드로이드 WebView 에서는 등록 오류만 남긴다
+fs.writeFileSync(path.join(OUT, 'rhwp', 'registerSW.js'), '// 앱: 파일이 이미 기기에 있으므로 서비스 워커를 쓰지 않음\n');
 
 // ---- 2. 오프라인 ONLYOFFICE 편집기 → /document/
 log('오프라인 편집기 받는 중', OO_IMAGE);
