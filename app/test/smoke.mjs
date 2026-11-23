@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 앱 화면 동작 확인 (브라우저 + 가짜 파일 시스템). 데스크톱/안드로이드 껍데기와 같은 bridge 모양을 흉내 낸다.
 //   node app/serve.mjs 8790 &  →  node app/test/smoke.mjs [http://127.0.0.1:8790] [검사이름...]
-// 검사: docx, xlsx, pptx, hwp, hwpx, pdf, legacy
+// 검사: docx, xlsx, pptx, hwp, hwpx, pdf, legacy, hcell, hshow, hwpmenu, download, drop
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -60,10 +60,10 @@ async function newPage() {
     let dirty = false;
     window.nativeBridge = {
       platform: 'test',
-      pickOpen: async () => { const f = window.__nextOpen; window.__nextOpen = null; return f; },
+      pickOpen: async () => { (window.__calls ||= []).push('pickOpen'); const f = window.__nextOpen; window.__nextOpen = null; return f; },
       read: async (h) => ({ name: h.split('/').pop(), bytes: fs.get(h) }),
       write: async (h, bytes) => { fs.set(h, new Uint8Array(bytes)); },
-      pickSave: async (name, bytes) => { const h = `/saved/${window.__nextSave || name}`; fs.set(h, new Uint8Array(bytes)); window.__lastSave = h; return { handle: h, name: h.split('/').pop() }; },
+      pickSave: async (name, bytes) => { (window.__calls ||= []).push(`pickSave ${name}`); const h = `/saved/${window.__nextSave || name}`; fs.set(h, new Uint8Array(bytes)); window.__lastSave = h; return { handle: h, name: h.split('/').pop() }; },
       onOpenRequest: (cb) => { window.__open = cb; },
       setDirty: (d) => { dirty = d; window.__dirty = d; },
       setTitle: (t) => { document.title = t; },
@@ -192,7 +192,108 @@ const checks = {
     const out = (await getFile(page, '/docs/t.csv')).toString('utf8');
     if (!out.includes('나')) throw new Error(`csv 저장 내용 이상: ${out.slice(0, 80)}`);
   },
+
+  async hcell(page) {
+    await page.click('[data-new="hcell"]');
+    await waitOffice(page);
+    if ((await page.locator('#doc-icon b').textContent()) !== '셀') throw new Error('한셀 아이콘 아님');
+    await clickDoc(page, 0.2, 0.3);
+    await page.keyboard.type('HCELL1', { delay: 30 });
+    await page.keyboard.press('Control+s');
+    await toastOk(page);
+    const h = await page.evaluate(() => window.__lastSave);
+    if (!h.endsWith('새 한셀 문서.xlsx')) throw new Error(`이름 이상: ${h}`);
+    if (!zipText(await getFile(page, h), /^xl\/(sharedStrings|worksheets\/sheet\d+)\.xml$/).includes('HCELL1')) throw new Error('내용 없음');
+    // 최근 문서에도 한셀로 표시
+    await page.click('#home');
+    if ((await page.locator('#recent li[data-i] .ficon b').first().textContent()) !== '셀') throw new Error('최근 문서 아이콘이 한셀이 아님');
+  },
+  async hshow(page) {
+    await page.click('[data-new="hshow"]');
+    await waitOffice(page);
+    if ((await page.locator('#doc-icon b').textContent()) !== '쇼') throw new Error('한쇼 아이콘 아님');
+    await page.keyboard.press('Control+s');
+    await toastOk(page);
+    const h = await page.evaluate(() => window.__lastSave);
+    if (!h.endsWith('새 한쇼 문서.pptx') || !unzipEntry(await getFile(page, h), 'ppt/presentation.xml')) throw new Error(`한쇼 저장 이상: ${h}`);
+  },
+  async hwpmenu(page) {
+    // 한글 편집기 자체 '파일' 메뉴가 앱의 열기/저장으로 가는지 (편집기 안에서 따로 열리면 앞 파일을 덮어쓰는 사고)
+    const bytes = [...fs.readFileSync(FIXTURE)];
+    await page.evaluate((b) => { window.__fs.set('/docs/m.hwp', new Uint8Array(b)); window.__nextOpen = { handle: '/docs/m.hwp', name: 'm.hwp', bytes: new Uint8Array(b) }; }, bytes);
+    await page.click('#open');
+    await page.locator('#loading').waitFor({ state: 'hidden', timeout: 120_000 });
+    await page.waitForTimeout(1000);
+    const f = page.frameLocator('#hwp iframe');
+    const menu = async (cmd) => {
+      const item = f.locator(`[data-cmd="${cmd}"]`);
+      for (let i = 0; i < 3 && !(await item.isVisible()); i++) {
+        await f.locator('.menu-item[data-menu="file"] > .menu-title').click();
+        await page.waitForTimeout(300);
+      }
+      await item.click();
+      await page.waitForTimeout(800);
+      if (await item.isVisible()) throw new Error(`${cmd} 누른 뒤 메뉴가 안 닫힘`);
+    };
+    await f.locator('.menu-item[data-menu="file"] > .menu-title').click();
+    await page.waitForTimeout(300);
+    if (await f.locator('.md-sub[data-recent]').isVisible()) throw new Error('편집기 최근 문서 메뉴가 안 숨겨짐');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => { window.__calls = []; });
+    await menu('file:open');
+    await clickDoc(page, 0.5, 0.42);
+    await page.keyboard.type('MENU1', { delay: 40 });
+    await page.waitForFunction(() => window.__dirty === true, null, { timeout: 10_000 });
+    await menu('file:save');
+    await page.waitForFunction(() => /저장됨/.test(document.querySelector('#status').textContent), null, { timeout: 30_000 });
+    await menu('file:save-as-hwpx');
+    await toastOk(page);
+    const calls = await page.evaluate(() => window.__calls);
+    if (calls[0] !== 'pickOpen') throw new Error(`열기 메뉴가 앱으로 안 감: ${calls}`);
+    if (!calls.includes('pickSave m.hwpx')) throw new Error(`HWPX로 저장 메뉴 이상: ${calls}`);
+    if (Buffer.compare(await getFile(page, '/docs/m.hwp'), Buffer.from(bytes)) === 0) throw new Error('메뉴 저장이 파일에 안 씀');
+    if (!(await page.evaluate(() => window.__app.cur.name)).endsWith('.hwpx')) throw new Error('HWPX 로 저장 후 현재 문서 이름이 안 바뀜');
+    // 바깥 스크롤바 없음 (이중 스크롤)
+    const sc = await page.evaluate(() => { const e = document.querySelector('#hwp'); return e.scrollHeight - e.clientHeight; });
+    if (sc > 1) throw new Error(`한글 화면 바깥 스크롤 ${sc}px`);
+  },
+  async download(page) {
+    // 편집기 자체 '다운로드 방법'(ONLYOFFICE)·'HTML로 내보내기'(한글) → 앱 저장 대화상자
+    await page.click('[data-new="docx"]');
+    await waitOffice(page);
+    const fe = page.frameLocator('#office').frameLocator('iframe[name="frameEditor"]');
+    await page.evaluate(() => { window.__calls = []; });
+    await fe.locator('#file, li[data-tab="file"]').first().click();
+    await page.waitForTimeout(800);
+    await fe.locator('.btn-doc-format[format="67"]').first().click();   // ODT
+    await page.waitForFunction(() => (window.__calls || []).some((c) => c.endsWith('.odt')), null, { timeout: 30_000 });
+    await page.evaluate(() => window.__app.closeDoc());
+    await page.click('[data-new="hwp"]');
+    await page.locator('#loading').waitFor({ state: 'visible' });
+    await page.locator('#loading').waitFor({ state: 'hidden', timeout: 120_000 });
+    const f = page.frameLocator('#hwp iframe');
+    await f.locator('.menu-item[data-menu="file"] > .menu-title').click();
+    await page.waitForTimeout(300);
+    await f.locator('[data-cmd="file:export-html"]').click();
+    await page.waitForFunction(() => (window.__calls || []).some((c) => /\.html?$/.test(c)), null, { timeout: 30_000 });
+  },
+  async drop(page) {
+    // 문서 파일을 편집기 위에 놓으면 앱에서 연다 (편집기 안에서 열리면 앞 파일 핸들로 저장되는 사고)
+    await page.click('[data-new="docx"]');
+    await waitOffice(page);
+    const bytes = [...fs.readFileSync(FIXTURE)];
+    await page.frames().find((fr) => fr.name() === 'frameEditor').evaluate((b) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([new Uint8Array(b)], 'dropped.hwp'));
+      const t = document.querySelector('#editor_sdk') || document.body;
+      t.dispatchEvent(new DragEvent('dragover', { dataTransfer: dt, bubbles: true, cancelable: true }));
+      t.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }, bytes);
+    await page.waitForFunction(() => window.__app.cur?.name === 'dropped.hwp', null, { timeout: 30_000 });
+    if (await page.evaluate(() => window.__app.cur.handle)) throw new Error('끌어다 놓은 파일에 핸들이 붙음 (브라우저에선 경로 없음)');
+  },
 };
+
 
 for (const [name, fn] of Object.entries(checks)) {
   if (only.length && !only.includes(name)) continue;
