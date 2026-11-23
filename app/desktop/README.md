@@ -7,12 +7,12 @@ Electron 껍데기. 앱 파일(`../build/www`)을 `https://app.myoffice.localhos
 node app/prepare.mjs                 # ../build/www (도커 필요)
 cd app/desktop && npm ci
 npx electron-builder --win nsis portable --x64
-# → dist/MyOffice-Setup-1.0.0.exe (설치), dist/MyOffice-Portable-1.0.0.exe (설치 없이 실행)
+# → dist/MyOffice-Setup-1.0.1.exe (설치), dist/MyOffice-Portable-1.0.1.exe (설치 없이 실행)
 ```
 코드 서명은 하지 않았으므로 처음 실행 때 SmartScreen 이 "Windows의 PC 보호" 를 띄운다 → **추가 정보 → 실행**.
 
 ## 설치
-- `MyOffice-Setup-1.0.0.exe` 실행 → 설치 위치 선택 (관리자 권한 필요 없음, 사용자 계정에 설치)
+- `MyOffice-Setup-1.0.1.exe` 실행 → 설치 위치 선택 (관리자 권한 필요 없음, 사용자 계정에 설치)
 - 시작 메뉴·바탕 화면에 **알오피스**
 - 파일 연결과 아이콘: hwp·hwpx·docx·doc·odt·rtf·xlsx·xls·ods·pptx·ppt·odp 를 알오피스로 열도록 등록하고,
   형식별 아이콘(한/W/X/P + 확장자)을 붙인다.
