@@ -18,6 +18,17 @@ test('한글: hwpx 새 문서 열기', async ({ browser }) => {
   noErrors(u.errors);
 });
 
+test('한글: 새 hwpx 문서도 저장됨 (빈 템플릿 글자 모양 누락 회귀)', async ({ browser }) => {
+  const u = await newUser(browser);
+  const f = await create(u, 'hwpx');
+  await openEditor(u.page, `id=${f.id}`);
+  await hwpType(u.page, 'NEWHWPX42');
+  await u.page.keyboard.press('Control+s');
+  await expect(u.page.locator('.toast.ok')).toContainText('저장했습니다');
+  expect((await api(u, `/api/files/${f.id}`)).version).toBeGreaterThan(1);
+  noErrors(u.errors);
+});
+
 test('한글: 입력 → 자동 저장 → 다시 열어도 내용 유지', async ({ browser }) => {
   const u = await newUser(browser);
   const f = await uploadFixture(u, 'sample.hwp');
