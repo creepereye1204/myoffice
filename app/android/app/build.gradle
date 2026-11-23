@@ -1,0 +1,70 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 앱 파일: node app/prepare.mjs 가 만든 app/build/www 를 assets/www 로 넣는다
+def wwwDir = file("${rootDir}/../build/www")
+def assetsRoot = layout.buildDirectory.dir('generated/www-assets')
+def linkWww = tasks.register('linkWww') {
+    doLast {
+        if (!wwwDir.isDirectory()) throw new GradleException("app/build/www 가 없습니다 — 먼저 node app/prepare.mjs")
+        def root = assetsRoot.get().asFile
+        root.mkdirs()
+        def link = new File(root, 'www')
+        if (!java.nio.file.Files.isSymbolicLink(link.toPath())) {
+            link.delete()
+            java.nio.file.Files.createSymbolicLink(link.toPath(), wwwDir.toPath())
+        }
+    }
+}
+
+// 서명: keystore.properties 가 있으면 그걸로, 없으면 디버그 키 (직접 설치용)
+def ksFile = rootProject.file('keystore.properties')
+def ks = new Properties()
+if (ksFile.exists()) ks.load(new FileInputStream(ksFile))
+
+android {
+    namespace 'kr.myoffice.app'
+    compileSdk 34
+    buildToolsVersion '34.0.0'
+
+    defaultConfig {
+        applicationId 'kr.myoffice.app'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
+    }
+    signingConfigs {
+        release {
+            if (ksFile.exists()) {
+                storeFile rootProject.file(ks['storeFile'])
+                storePassword ks['storePassword']
+                keyAlias ks['keyAlias']
+                keyPassword ks['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ksFile.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+    sourceSets {
+        main.assets.srcDirs += assetsRoot
+    }
+    androidResources {
+        // 이미 압축된 형식은 다시 압축하지 않음 (읽을 때 풀기 비용 절약)
+        noCompress += ['png', 'jpg', 'gif', 'woff2', 'docx', 'xlsx', 'pptx', 'hwpx']
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    applicationVariants.all { v ->
+        v.outputs.all { outputFileName = "myoffice-${v.versionName}-${v.buildType.name}.apk" }
+    }
+}
+
+tasks.named('preBuild') { dependsOn linkWww }
