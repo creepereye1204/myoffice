@@ -13,6 +13,10 @@ const BENIGN = [/Permissions policy violation/, /favicon/, /Failed to load resou
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 let adminToken;
 export const created = [];
+// 이번 실행에서 만든 테스트 계정 이름 목록 — 정리(teardown.js)는 이 목록에 있는 계정만 지운다.
+// (이름 규칙으로 지우면 같은 모양의 아이디를 쓰는 실제 사용자 문서까지 지워질 수 있음)
+export const CREATED_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '.created-accounts');
+export function rememberAccount(username) { fs.appendFileSync(CREATED_FILE, `${username}\n`); }
 
 export async function adminH() {
   if (!adminToken) {
@@ -26,6 +30,7 @@ export async function adminH() {
 /** 관리자 API로 테스트 계정 생성 (+ 로그인 토큰) */
 export async function makeAccount(name = '테스터') {
   const username = 'e_' + Math.random().toString(36).slice(2, 12);
+  rememberAccount(username);
   const password = 'pw_' + Math.random().toString(36).slice(2, 14);
   const r = await fetch(`${API}/api/admin/users`, { method: 'POST', headers: { ...(await adminH()), 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password, name }) });
   if (!r.ok) throw new Error(await r.text());

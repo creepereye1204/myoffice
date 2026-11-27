@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { newUser, makeAccount, create, api, openEditor, watchErrors, noErrors, adminH, API } from './helpers.js';
+import { newUser, makeAccount, create, api, openEditor, watchErrors, noErrors, adminH, API, rememberAccount } from './helpers.js';
 
 test('로그인 안 하면 로그인 화면으로 (돌아갈 주소 유지)', async ({ page }) => {
   await page.goto('/');
@@ -13,6 +13,7 @@ test('로그인 안 하면 로그인 화면으로 (돌아갈 주소 유지)', as
 test('회원가입 → 홈 → 로그아웃 → 로그인', async ({ page }) => {
   const errors = watchErrors(page);
   const uname = 's_' + Math.random().toString(36).slice(2, 10);
+  rememberAccount(uname);
   await page.goto('/login');
   await page.click('[data-tab="signup"]');
   const f = page.locator('#signup-form');
