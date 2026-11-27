@@ -1,4 +1,4 @@
-import { api, download, exportAs, fileIcon, toast, esc, fmtSize, fmtTime, TYPE_INFO, kindOf, requireLogin, setSession, getToken, logout, LOCAL } from './common.js';
+import { api, download, exportAs, fileIcon, toast, esc, fmtSize, fmtTime, TYPE_INFO, kindOf, requireLogin, setSession, getToken, logout } from './common.js';
 
 const $ = (s) => document.querySelector(s);
 let files = [];
@@ -25,7 +25,7 @@ function render() {
       <button class="open" data-act="open" title="열기">
         ${fileIcon(kindOf(f), f.ext)}
         <span class="meta">
-          <span class="name">${esc(f.name)}${f.shared ? ' <span class="badge">공유 중</span>' : ''}${f.external ? ' <span class="badge" title="알오피스 폴더 밖의 파일 — 그 자리에 저장됩니다">다른 폴더</span>' : ''}${f.role ? ` <span class="badge">${ROLE[f.role]}</span>` : ''}</span>
+          <span class="name">${esc(f.name)}${f.shared ? ' <span class="badge">공유 중</span>' : ''}${f.role ? ` <span class="badge">${ROLE[f.role]}</span>` : ''}</span>
           <span class="sub">${f.owner ? `${esc(f.owner)} · ` : ''}${TYPE_INFO[kindOf(f)]?.label || ''} · ${fmtSize(f.size)} · ${fmtTime(f.modified)}${f.editable ? '' : ' · 보기 전용'}</span>
         </span>
       </button>
@@ -46,7 +46,7 @@ async function load() {
     render();
     if (scope === 'mine') {
       const u = await api('/api/workspaces/me');
-      $('#usage').textContent = u.local ? `${u.folder} · 파일 ${u.files}개 · ${fmtSize(u.used)}` : `사용량 ${fmtSize(u.used)} / ${fmtSize(u.quota)} · 파일 ${u.files}개`;
+      $('#usage').textContent = `사용량 ${fmtSize(u.used)} / ${fmtSize(u.quota)} · 파일 ${u.files}개`;
     } else $('#usage').textContent = '';
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -100,10 +100,10 @@ $('#list').addEventListener('click', async (e) => {
     m.className = 'menu floating';
     m.innerHTML = `
       <button data-m="open">열기</button>
-      ${f.ext !== 'pdf' && !(LOCAL && f.type === 'hwp') ? `<button data-m="pdf">PDF로 ${LOCAL ? '저장' : '다운로드'}</button>` : ''}
+      ${f.ext !== 'pdf' ? `<button data-m="pdf">PDF로 다운로드</button>` : ''}
       ${owner ? '<button data-m="rename">이름 바꾸기</button>' : ''}
-      ${owner && !(LOCAL && f.type === 'hwp') ? (CONVERT[f.type] || []).filter(([t]) => t !== f.ext).map(([t, l]) => `<button data-m="conv" data-to="${t}">${l} 사본 만들기</button>`).join('') : ''}
-      ${owner ? `<hr /><button data-m="delete" class="danger">${f.external ? '목록에서 빼기' : '삭제'}</button>` : ''}`;
+      ${owner ? (CONVERT[f.type] || []).filter(([t]) => t !== f.ext).map(([t, l]) => `<button data-m="conv" data-to="${t}">${l} 사본 만들기</button>`).join('') : ''}
+      ${owner ? `<hr /><button data-m="delete" class="danger">삭제</button>` : ''}`;
     document.body.appendChild(m);
     const r = btn.getBoundingClientRect();
     m.style.top = `${r.bottom + window.scrollY + 4}px`;
@@ -126,10 +126,9 @@ $('#list').addEventListener('click', async (e) => {
           toast(`${nf.name} 생성됨`, 'ok');
           load();
         }
-        if (it.dataset.m === 'delete' && confirm(f.external ? `"${f.name}"을(를) 목록에서 뺄까요? 파일은 그대로 남습니다.`
-          : LOCAL ? `"${f.name}"을(를) 삭제할까요? (휴지통으로 갑니다)` : `"${f.name}"을(를) 삭제할까요? 되돌릴 수 없습니다.`)) {
+        if (it.dataset.m === 'delete' && confirm(`"${f.name}"을(를) 삭제할까요? 되돌릴 수 없습니다.`)) {
           await api(`/api/files/${id}`, { method: 'DELETE' });
-          toast(f.external ? '목록에서 뺐습니다' : '삭제했습니다'); load();
+          toast('삭제했습니다'); load();
         }
       } catch (er) { toast(er.message, 'err'); }
     });
@@ -224,39 +223,10 @@ async function warmEditors() {
   } catch {}
 }
 
-// ---- 앱 모드: 계정·공유 없이 기기 폴더의 파일
-async function setupLocal() {
-  const { platform } = await import('./local/platform.js');
-  const { registerFile } = await import('./local/backend.js');
-  document.querySelector('.account').hidden = true;
-  document.querySelector('.scope').hidden = true;
-  document.title = '알오피스';
-  // 업로드 → 가져오기 (알오피스 폴더로 복사), 열기 (기기 다른 곳의 파일을 그 자리에서)
-  const up = document.querySelector('label.upload');
-  up.childNodes.forEach((n) => { if (n.nodeType === 3 && n.textContent.trim()) n.textContent = ' 가져오기 '; });
-  up.title = '알오피스 폴더로 복사해서 가져옵니다';
-  if (platform.name !== 'browser') {
-    const open = document.createElement('button');
-    open.className = 'btn upload'; open.id = 'open-file'; open.title = '기기의 파일을 그 자리에서 열고 저장합니다';
-    open.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6l2 2h8v12H4V5Zm2 4v8h12V9H6Z"/></svg> 열기';
-    up.before(open);
-    open.addEventListener('click', async () => {
-      try { const f = await platform.pickOpen(); if (f) openFile(registerFile(f.handle)); } catch (e) { toast(e.message, 'err'); }
-    });
-  }
-  document.querySelector('#drop p').innerHTML = '<strong>파일을 여기로 끌어다 놓으세요</strong><br />docx · xlsx · pptx · hwp · hwpx · pdf 등';
-  if (['desktop', 'linux', 'windows'].includes(platform.name)) {
-    $('#usage').classList.add('link'); $('#usage').title = '폴더 열기';
-    $('#usage').addEventListener('click', () => platform.reveal());
-  }
-  // 운영체제에서 "이 앱으로 열기"
-  platform.onOpenRequest((f) => openFile(registerFile(f.handle)));
-}
-
 (async () => {
   me = await requireLogin();
-  if (LOCAL) await setupLocal(); else showMe();
+  showMe();
   load();
   window.addEventListener('pageshow', (e) => { if (e.persisted) load(); });
-  if (!LOCAL) (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(warmEditors);
+  (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(warmEditors);
 })();

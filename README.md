@@ -2,6 +2,8 @@
 
 웹 워드·엑셀·파워포인트 + 한글(HWP/HWPX) 편집 사이트.
 
+이전 오프라인 앱은 Git 태그 `archive/app-ubuntu`, `archive/app-windows`, `archive/app-android`, `archive/local-mode`와 [GitHub 릴리스](https://github.com/creepereye1204/myoffice/releases)에 보관되어 있다.
+
 - `www.<도메인>` — 프론트 (`rhwp-web`, nginx)
   - `/rhwp/` rhwp-studio (HWP 편집기, edwardkim/rhwp v0.9.1 빌드 미러, MIT)
   - `/office/` ONLYOFFICE Document Server 프록시

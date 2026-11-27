@@ -1,5 +1,4 @@
 (() => {
-  if ('nativeBridge' in window || 'AndroidBridge' in window) return;
   if (!['www.myoffice.p-e.kr', 'www.rhwp.p-e.kr'].includes(location.hostname)) return;
   if (!navigator.sendBeacon || !performance.getEntriesByType) return;
 

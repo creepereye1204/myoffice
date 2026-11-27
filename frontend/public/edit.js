@@ -1,4 +1,4 @@
-import { api, download, exportAs, fileIcon, toast, kindOf, esc, setShare, getUser, setUserName, connectRoom, requireLogin, getToken, LOCAL, saveToDevice } from './common.js';
+import { api, download, exportAs, fileIcon, toast, kindOf, esc, setShare, getUser, setUserName, connectRoom, requireLogin, getToken } from './common.js';
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
@@ -27,7 +27,6 @@ function loadScript(src) {
 }
 
 async function askName(force = false) {
-  if (LOCAL) return;
   if (me.account) { if (force) toast('이름은 홈 화면 계정 메뉴에서 바꿀 수 있습니다'); return; }
   if (me.name && !force) return;
   const d = $('#name-dialog');
@@ -453,72 +452,16 @@ async function openOnlyOffice() {
   else if (file.role === 'view') setStatus('보기 전용 공유');
 }
 
-// ---------------------------------------------------------------- 앱 모드: 오프라인 ONLYOFFICE (서버 없음)
-// 편집기 안 문서를 형식 그대로 받아 기기 파일에 쓴다. 수정이 생기면 5초 뒤 자동 저장.
-let office = null, officeDirty = false, officeSaving = false, officeTimer = 0, officeAgain = false;
-async function openLocalOffice() {
-  const { LocalOffice } = await import('./local/office.js');
-  office = new LocalOffice($('#oo-holder'));
-  const res = await api(`/api/files/${id}/content`);
-  setLoading('문서를 여는 중…');
-  await office.open(new Uint8Array(await res.arrayBuffer()), file.name, !file.editable);
-  ooReady = true;
-  doneLoading();
-  hookFrames();
-  setInterval(() => hookFrames(), 1000);
-  office.onDirty = (d) => {
-    setDirtyFlag(d);
-    if (!d || !file.editable) return;
-    setStatus('수정됨 — 곧 자동 저장');
-    clearTimeout(officeTimer);
-    officeTimer = setTimeout(() => saveLocalOffice(false), 5000);
-  };
-  if (!file.editable) setStatus('보기 전용 — docx/xlsx/pptx로 변환하면 편집할 수 있습니다');
-}
-async function saveLocalOffice(manual) {
-  if (!office || !ooReady) return manual && toast('문서를 여는 중입니다');
-  if (!file.editable) return manual && toast('보기 전용 문서입니다 — 홈 화면 메뉴에서 docx/xlsx/pptx 사본을 만들면 편집할 수 있습니다');
-  if (officeSaving) { if (manual) officeAgain = true; return; }
-  clearTimeout(officeTimer);
-  officeSaving = true;
-  setStatus('저장 중…');
-  try {
-    const { bytes, dirty: still } = await office.save(file.ext);
-    file = { ...file, ...(await api(`/api/files/${id}/content`, { method: 'PUT', body: bytes })) };
-    setDirtyFlag(still);
-    setStatus(`${manual ? '저장됨' : '자동 저장됨'} · ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`, 'ok');
-    if (manual) toast('저장했습니다', 'ok');
-    if (still) officeTimer = setTimeout(() => saveLocalOffice(false), 5000);
-  } catch (e) {
-    setStatus('저장 실패', 'err'); toast(`저장하지 못했습니다: ${e.message}`, 'err');
-  } finally {
-    officeSaving = false;
-    if (officeAgain) { officeAgain = false; saveLocalOffice(true); }
-  }
-}
-// 저장 안 된 수정이 있는지 (앱 창 닫기 확인·뒤로 가기용)
-let anyDirty = false;
-function setDirtyFlag(d) {
-  anyDirty = d;
-  if (LOCAL) import('./local/platform.js').then(({ platform }) => platform.setDirty(d));
-}
-async function flushSave() {
-  if (file?.type === 'hwp') { if (dirty && canWrite) await saveHwp(); return !dirty; }
-  if (office && anyDirty) await saveLocalOffice(false);
-  return !anyDirty;
-}
-
 // ---------------------------------------------------------------- 편집기(iframe) 안의 파일 기능을 이 화면으로
 // 한글 편집기 '파일' 메뉴의 새로 만들기·열기는 편집기 안에서 다른 파일을 열어, 이어지는 저장이 지금 파일을 덮어쓴다.
 // → 저장은 이 화면의 저장으로, 다른 형식 저장은 내려받기로, 새로 만들기·열기는 홈 화면에서 하게 한다.
 async function hwpExport(ext) {
   const bytes = ext === 'hwpx' ? await editor.exportHwpx() : await editor.exportHwp();
   const name = `${file.name.replace(/\.[^.]+$/, '')}.${ext}`;
-  if (LOCAL) return saveToDevice(name, bytes);
   const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([bytes])), download: name });
   document.body.appendChild(a); a.click(); a.remove();
 }
-const goHomeMsg = () => toast(LOCAL ? '처음 화면에서 새로 만들거나 열어 주세요' : '홈 화면에서 새로 만들거나 업로드해 주세요');
+const goHomeMsg = () => toast('홈 화면에서 새로 만들거나 업로드해 주세요');
 const HWP_FILE_CMDS = {
   'file:new-doc': goHomeMsg,
   'file:open': goHomeMsg,
@@ -527,9 +470,6 @@ const HWP_FILE_CMDS = {
   'file:save-as-hwp': () => hwpExport('hwp'),
   'file:save-as-hwpx': () => hwpExport('hwpx'),
 };
-if (window.AndroidBridge) {
-  HWP_FILE_CMDS['file:print'] = HWP_FILE_CMDS['file:print-to-pdf'] = () => toast('안드로이드 앱에서는 한글 문서 인쇄를 아직 지원하지 않습니다');
-}
 const DOC_EXT = /\.(docx?|odt|rtf|txt|xlsx?|ods|csv|pptx?|odp|hwpx?|pdf)$/i;
 const hookedWins = new WeakSet();
 function hookWin(win) {
@@ -556,25 +496,9 @@ function hookWin(win) {
     win.addEventListener('drop', (e) => {
       if ([...(e.dataTransfer?.files || [])].some((f) => DOC_EXT.test(f.name))) {
         e.preventDefault(); e.stopImmediatePropagation();
-        toast(LOCAL ? '문서는 처음 화면에 끌어다 놓아 여세요' : '문서는 홈 화면에 끌어다 놓아 업로드하세요');
+        toast('문서는 홈 화면에 끌어다 놓아 업로드하세요');
       }
     }, true);
-    if (LOCAL) {
-      // 앱: 편집기의 내려받기(ONLYOFFICE '다운로드 방법', 한글 'HTML로 내보내기')를 기기 저장 창으로
-      for (const k of ['showSaveFilePicker', 'showOpenFilePicker', 'showDirectoryPicker']) {
-        try { Object.defineProperty(win, k, { value: undefined, configurable: true }); } catch { /* 무시 */ }
-      }
-      const save = async (href, name) => saveToDevice(name || 'document', new Uint8Array(await (await fetch(href)).arrayBuffer())).catch((er) => toast(er.message, 'err'));
-      const A = win.HTMLAnchorElement.prototype, orig = A.click;
-      A.click = function () {
-        if (this.hasAttribute('download') && /^(blob|data):/.test(this.href)) { save(this.href, this.getAttribute('download')); return; }
-        return orig.call(this);
-      };
-      win.addEventListener('click', (e) => {
-        const a = e.target.closest?.('a[download]');
-        if (a && /^(blob|data):/.test(a.href)) { e.preventDefault(); e.stopImmediatePropagation(); save(a.href, a.getAttribute('download')); }
-      }, true);
-    }
   } catch { /* 다른 출처 */ }
 }
 // ONLYOFFICE 는 iframe 안에 또 iframe 을 만든다 → 같은 출처 frame 을 주기적으로 찾아 건다
@@ -599,7 +523,6 @@ async function saveNow(fromEditor = false) {
     if (!editor) return toast('문서를 여는 중입니다');
     return canWrite ? saveHwp(true) : nudge();
   }
-  if (office) return saveLocalOffice(true);
   if (ooSaving) return;
   if (!ooReady) return toast('문서를 여는 중입니다');
   ooSaving = true; setStatus('저장 중…');
@@ -638,7 +561,7 @@ async function saveHwp(manual = false) {
     })) };
     version = file.version;
     try { await editor.notifySaved(file.name); } catch {}
-    dirty = false; setDirtyFlag(false);
+    dirty = false;
     setStatus(`${manual ? '저장됨' : '자동 저장됨'} · ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`, 'ok');
     if (manual) toast('저장했습니다', 'ok');
   } catch (e) {
@@ -722,7 +645,7 @@ async function openHwp() {
     let st;
     try { st = await editor.getDocumentState(); } catch { return; }
     if (st.changeSeq !== lastSeq) { if (lastSeq !== -1 || st.changeSeq > 0) lastChange = Date.now(); lastSeq = st.changeSeq; }
-    if (st.dirty !== dirty) { dirty = st.dirty; setDirtyFlag(dirty); if (dirty && canWrite) setStatus('수정됨 — 곧 자동 저장'); }
+    if (st.dirty !== dirty) { dirty = st.dirty; if (dirty && canWrite) setStatus('수정됨 — 곧 자동 저장'); }
     if (dirty && canWrite && !saving && Date.now() - lastChange >= 5000) saveHwp();
     window.__autosave = { dirty, canWrite, saving, seq: st.changeSeq, idle: Date.now() - lastChange };  // 진단용
   }, 1500);
@@ -803,7 +726,6 @@ async function main() {
 
   await askName();
   document.title = `${file.name} — 알오피스`;
-  if (LOCAL) document.body.classList.add('local');
   $('#ficon').innerHTML = fileIcon(kindOf(file), file.ext);
   $('#share').hidden = file.role !== 'owner';
   $('#share').addEventListener('click', () => openShare().catch((e) => toast(e.message, 'err')));
@@ -820,46 +742,20 @@ async function main() {
   });
   t.addEventListener('keydown', (e) => { if (e.key === 'Enter') t.blur(); });
 
-  // 앱: 한글 → PDF 변환기가 없어 PDF 버튼은 오피스 문서만
-  $('#pdf').hidden = file.ext === 'pdf' || (LOCAL && file.type === 'hwp');
+  $('#pdf').hidden = file.ext === 'pdf';
   $('#pdf').addEventListener('click', async () => {
     const b = $('#pdf'); b.disabled = true;
     try {
       if (file.type === 'hwp' && dirty && canWrite) await saveHwp();
       toast('PDF 만드는 중…');
-      if (office) await saveToDevice(`${file.name.replace(/\.[^.]+$/, '')}.pdf`, (await office.save('pdf')).bytes);
-      else await exportAs(id, 'pdf');
+      await exportAs(id, 'pdf');
     } catch (e) { toast(e.message, 'err'); } finally { b.disabled = false; }
   });
 
-  if (LOCAL) $('#dl').title = '다른 곳에 저장';
   $('#dl').addEventListener('click', async () => {
     if (file.type === 'hwp' && dirty && canWrite) await saveHwp();
-    if (office && anyDirty) await saveLocalOffice(false);
     download(id).catch((e) => toast(e.message, 'err'));
   });
-
-  if (LOCAL) {
-    // 앱: 혼자 쓰므로 공유·접속자·실시간 표시 없음
-    $('#share').hidden = true;
-    $('#people').hidden = true;
-    $('#conn').hidden = true;
-    document.title = file.name;
-    const { platform } = await import('./local/platform.js');
-    const { registerFile } = await import('./local/backend.js');
-    platform.setTitle(`${file.name} — 알오피스`);
-    // 다른 문서를 "이 앱으로 열기" 하면 지금 문서를 저장하고 넘어간다
-    platform.onOpenRequest(async (f) => { await flushSave().catch(() => {}); location.href = `/edit?id=${registerFile(f.handle)}`; });
-    // 창 닫기 확인에서 '저장'(데스크톱), 뒤로 가기(안드로이드)
-    window.__saveBeforeClose = () => flushSave();
-    window.__onBack = () => { flushSave().finally(() => { location.href = '/'; }); return true; };
-    $('#back').addEventListener('click', async (e) => {
-      if (!anyDirty) return;
-      e.preventDefault();
-      await flushSave().catch(() => {});
-      location.href = '/';
-    });
-  }
 
   // 실시간 방 (접속자, 마우스 포인터, HWP 잠금, 저장 알림)
   room = connectRoom(id, async (m) => {
@@ -875,7 +771,7 @@ async function main() {
         });
       }
       if (file.type === 'hwp' && !(m.lock === me.uid && m.requests?.length)) applyLock();
-    } else if (!LOCAL && m.type === 'cursor') {
+    } else if (m.type === 'cursor') {
       receiveCursor(m);
     } else if (m.type === 'saved' && file.type === 'hwp' && editor && !canWrite) {
       reloadHwp(m.by).catch(() => {});
@@ -885,32 +781,29 @@ async function main() {
       file.name = m.name; if (document.activeElement !== t) t.value = base(); document.title = `${file.name} — 알오피스`;
     }
   }, (on) => {
-    if (!LOCAL) {
-      cursorOnline = on;
-      if (!on) {
-        clearTimeout(cursorTimer);
-        cursorTimer = 0;
-        pendingCursor = pendingRelease = lastCursor = dragStart = undefined;
-        for (const uid of remoteCursors.keys()) removeRemoteCursor(uid);
-      }
+    cursorOnline = on;
+    if (!on) {
+      clearTimeout(cursorTimer);
+      cursorTimer = 0;
+      pendingCursor = pendingRelease = lastCursor = dragStart = undefined;
+      for (const uid of remoteCursors.keys()) removeRemoteCursor(uid);
     }
     clearTimeout(connTimer);
     if (on) connected = true; else connTimer = setTimeout(() => { connected = false; applyLock(); }, 8000);
     $('#conn').classList.toggle('on', on); $('#conn').title = on ? '실시간 연결됨' : '연결 끊김 — 다시 연결 중'; });
 
-  if (!LOCAL) startCursors();
+  startCursors();
 
   // 창을 닫거나 다른 페이지로 갈 때는 편집 잠금을 바로 넘긴다 (갑작스러운 끊김만 잠시 유지)
   window.addEventListener('pagehide', (e) => { if (!e.persisted) room.bye(); });
 
   try {
     if (file.type === 'hwp') await openHwp();
-    else if (LOCAL) await openLocalOffice();
     else await openOnlyOffice();
   } catch (e) { fail(e.message || '편집기를 불러오지 못했습니다'); }
 }
 
-// 검사용 (app/test/formats.mjs, 브라우저 E2E)
-window.__edit = { get file() { return file; }, get office() { return office; }, get editor() { return editor; }, get dirty() { return anyDirty || dirty; } };
+// 검사용 (브라우저 E2E)
+window.__edit = { get file() { return file; }, get editor() { return editor; }, get dirty() { return dirty; } };
 
 main();
