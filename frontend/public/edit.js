@@ -53,23 +53,30 @@ $('#people').addEventListener('click', (e) => { if (e.target.closest('.avatar.me
 // ---------------------------------------------------------------- 마우스 포인터
 const remoteCursors = new Map();
 let cursorFrame = 0, cursorTimer = 0, cursorOnline = false;
-let pendingCursor, lastCursor, lastCursorTime = -Infinity;
+let pendingCursor, pendingRelease, lastCursor, lastCursorTime = -Infinity;
 
 function flushCursor() {
   cursorTimer = 0;
-  if (!cursorOnline || !pendingCursor || (document.hidden && pendingCursor.x !== null)) return;
-  const pos = pendingCursor;
-  pendingCursor = undefined;
+  const pos = pendingRelease ?? pendingCursor;
+  if (!cursorOnline || !pos || (document.hidden && pos.x !== null)) return;
+  if (pendingRelease) pendingRelease = undefined;
+  else pendingCursor = undefined;
   const key = JSON.stringify(pos);
-  if (key === lastCursor) return;
-  room.send({ type: 'cursor', ...pos });
-  lastCursor = pos.x === null ? undefined : key;
-  lastCursorTime = performance.now();
+  if (key !== lastCursor || pos.sel) {
+    room.send({ type: 'cursor', ...pos });
+    lastCursor = pos.x === null ? undefined : key;
+    lastCursorTime = performance.now();
+  }
+  if (pendingCursor) queueCursor(pendingCursor);
 }
 
-function queueCursor(pos) {
-  if (!cursorOnline || (pos.x === null && !lastCursor && !pendingCursor)) return;
-  pendingCursor = pos;
+function queueCursor(pos, release = false) {
+  if (!cursorOnline || (pos.x === null && !lastCursor && !pendingCursor && !pendingRelease)) return;
+  if (release) {
+    // 다음 포인터 이동이 마우스를 놓을 때의 선택 영역을 덮어쓰지 않게 한다.
+    pendingRelease = pos;
+    pendingCursor = undefined;
+  } else pendingCursor = pos;
   if (cursorTimer) return;
   const delay = 50 - (performance.now() - lastCursorTime);
   if (delay <= 0) flushCursor();
@@ -77,7 +84,8 @@ function queueCursor(pos) {
 }
 
 function hideCursor() {
-  if (lastCursor) queueCursor({ x: null });
+  if (document.hidden) pendingRelease = undefined;
+  if (lastCursor || pendingRelease) queueCursor({ x: null });
   else pendingCursor = undefined;
 }
 
@@ -151,24 +159,82 @@ function cursorPosition(win, surface, x, y) {
   return { space: 'viewport', x: vx, y: vy };
 }
 
-let cursorSurface;
+let cursorSurface, dragStart;
 const cursorDocs = new WeakSet();
+
+function eventCursorPosition(win, e) {
+  if (document.hidden || !e.isPrimary || !cursorSurface?.surface.isConnected) return null;
+  const { win: target, surface } = cursorSurface;
+  const from = cursorOrigin(win), to = cursorOrigin(target);
+  return cursorPosition(target, surface, e.clientX + from.x - to.x, e.clientY + from.y - to.y);
+}
+
+function hwpSelectionRects(surface, pos) {
+  if (pos.space !== 'hwp' || pos.page === undefined) return [];
+  const page = hwpCursorLayout(surface).pages.find((p) => p.page === pos.page && p.zoom > 0);
+  if (!page) return [];
+  const rects = [];
+  // rhwp는 글자 선택을 별도 DOM 층에 그린다. 현재 페이지의 글자 선택만 읽는다.
+  for (const el of surface.querySelectorAll('.selection-layer > .selection-highlight')) {
+    if (el.style.display === 'none') continue;
+    const box = el.getBoundingClientRect(), { left, top, right, bottom } = page.box;
+    if (!box.width || !box.height || box.left < left - 1 || box.right > right + 1 ||
+        box.top < top - 1 || box.bottom > bottom + 1) continue;
+    rects.push([(box.left - left) / page.zoom, (box.top - top) / page.zoom,
+      box.width / page.zoom, box.height / page.zoom]);
+    if (rects.length === 20) break;
+  }
+  return rects;
+}
+
+function cancelCursorDrag() {
+  dragStart = undefined;
+  hideCursor();
+}
+
 function hookCursorWin(win) {
   const doc = win.document;
   const surface = cursorEditorSurface(win);
   if (surface) cursorSurface = { win, surface };
   if (cursorDocs.has(doc)) return;
   cursorDocs.add(doc);
-  win.addEventListener('pointermove', (e) => {
-    if (document.hidden || !e.isPrimary || !cursorSurface?.surface.isConnected) return;
-    const { win: target, surface } = cursorSurface;
-    const from = cursorOrigin(win), to = cursorOrigin(target);
-    const pos = cursorPosition(target, surface, e.clientX + from.x - to.x, e.clientY + from.y - to.y);
-    if (pos) queueCursor(pos); else hideCursor();
+  win.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse' || e.button !== 0 || !e.isPrimary) return;
+    const pos = eventCursorPosition(win, e);
+    dragStart = pos ? { pos, pointerId: e.pointerId, surface: cursorSurface.surface, moved: false } : undefined;
   }, true);
+  win.addEventListener('pointermove', (e) => {
+    if (!e.isPrimary) return;
+    const pos = eventCursorPosition(win, e);
+    if (dragStart?.pointerId === e.pointerId) {
+      if (!(e.buttons & 1) || dragStart.surface !== cursorSurface?.surface) dragStart = undefined;
+      else if (pos && dragStart.pos.space === pos.space) {
+        const start = dragStart.pos;
+        dragStart.moved ||= start.x !== pos.x || start.y !== pos.y || start.page !== pos.page;
+        if (dragStart.moved) {
+          pos.d = [start.x, start.y];
+          if (start.page !== pos.page) pos.dp = start.page ?? null;
+        }
+      }
+    }
+    if (pos) queueCursor(pos);
+    else hideCursor();
+  }, true);
+  win.addEventListener('pointerup', (e) => {
+    if (!dragStart || dragStart.pointerId !== e.pointerId || e.button !== 0) return;
+    const { moved, surface } = dragStart;
+    dragStart = undefined;
+    if (!moved) return;
+    const pos = eventCursorPosition(win, e);
+    if (!pos || surface !== cursorSurface.surface) return hideCursor();
+    const sel = hwpSelectionRects(surface, pos);
+    if (sel.length) pos.sel = sel;
+    queueCursor(pos, true);
+  }, true);
+  win.addEventListener('pointercancel', cancelCursorDrag, true);
   doc.addEventListener('pointerout', (e) => { if (!e.relatedTarget) hideCursor(); }, true);
-  win.addEventListener('blur', hideCursor);
-  win.addEventListener('pagehide', hideCursor);
+  win.addEventListener('blur', cancelCursorDrag);
+  win.addEventListener('pagehide', cancelCursorDrag);
 }
 
 function startCursors() {
@@ -180,47 +246,87 @@ function startCursors() {
   setInterval(scan, 500);
   $('#stage').addEventListener('pointerleave', hideCursor);
   $('#stage').addEventListener('pointermove', hideCursor);
-  window.addEventListener('blur', hideCursor);
-  window.addEventListener('pagehide', hideCursor);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) hideCursor(); });
+  window.addEventListener('pointerup', (e) => {
+    if (dragStart?.pointerId === e.pointerId && e.button === 0) cancelCursorDrag();
+  }, true);
+  window.addEventListener('blur', () => {
+    // 편집기 iframe에 초점이 들어가는 경우에는 브라우저 창에 초점이 남아 있다.
+    setTimeout(() => { if (!document.hasFocus()) cancelCursorDrag(); }, 0);
+  });
+  window.addEventListener('pagehide', cancelCursorDrag);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cancelCursorDrag(); });
 }
 
 function removeRemoteCursor(uid) {
-  remoteCursors.get(uid)?.el.remove();
+  const entry = remoteCursors.get(uid);
+  entry.el.remove();
+  entry.dragEl.remove();
+  for (const el of entry.selectionEls) el.remove();
   remoteCursors.delete(uid);
+}
+
+function cursorRect(kind, uid) {
+  const el = document.createElement('div');
+  el.className = kind;
+  el.dataset.uid = uid;
+  el.hidden = true;
+  $('#remote-cursors').appendChild(el);
+  return el;
 }
 
 function receiveCursor(msg) {
   if (msg.uid === me.uid) return;
   const user = presence.users.find((u) => u.uid === msg.uid);
-  if (msg.x === null || !user) return removeRemoteCursor(msg.uid);
   let entry = remoteCursors.get(msg.uid);
+  if (!user || (msg.x === null && !entry)) return;
   if (!entry) {
-    const el = document.createElement('div');
-    el.className = 'remote-cursor';
-    el.dataset.uid = msg.uid;
-    el.hidden = true;
+    const el = cursorRect('remote-cursor', msg.uid);
     el.innerHTML = '<svg viewBox="0 0 16 19"><path d="M2 1l12 11-6 1-3 5z" fill="currentColor" stroke="white" stroke-linejoin="round"/></svg><span></span>';
-    $('#remote-cursors').appendChild(el);
-    entry = { el, label: el.querySelector('span') };
+    entry = { el, label: el.querySelector('span'), dragEl: cursorRect('remote-drag', msg.uid), selectionEls: [] };
     remoteCursors.set(msg.uid, entry);
   }
+  const now = performance.now();
+  if (msg.d) entry.drag = { msg, fade: 0 };
+  else if (entry.drag && !entry.drag.fade) {
+    const start = entry.drag.msg;
+    if (msg.space === start.space) {
+      entry.drag.msg = { ...msg, d: start.d, dp: start.dp === undefined ? start.page ?? null : start.dp };
+    }
+    entry.drag.fade = now + 600;
+  }
+  if (msg.sel?.length) {
+    for (const el of entry.selectionEls) el.remove();
+    entry.selectionEls = msg.sel.map(() => cursorRect('remote-selection', msg.uid));
+    entry.selection = { msg, expires: now + 3000 };
+  }
   entry.msg = msg;
-  entry.expires = performance.now() + 10000;
-  if (!cursorFrame) drawCursors(performance.now());
+  entry.expires = now + 10000;
+  if (!cursorFrame) drawCursors(now);
 }
 
 function drawCursors(now) {
   cursorFrame = 0;
   for (const [uid, entry] of remoteCursors) {
+    if (entry.drag?.fade && now >= entry.drag.fade) {
+      entry.drag = undefined;
+      entry.dragEl.hidden = true;
+    }
+    if (entry.selection && now >= entry.selection.expires) {
+      for (const el of entry.selectionEls) el.remove();
+      entry.selectionEls = [];
+      entry.selection = undefined;
+    }
     const user = presence.users.find((u) => u.uid === uid);
-    if (!user || now >= entry.expires) removeRemoteCursor(uid);
+    if (!user || now >= entry.expires || (entry.msg.x === null && !entry.drag && !entry.selection)) removeRemoteCursor(uid);
   }
   if (!remoteCursors.size) return;
   // 스크롤·확대 중에는 새 패킷이 없어도 현재 편집기 위치로 다시 그린다.
   cursorFrame = requestAnimationFrame(drawCursors);
   if (!cursorSurface?.surface.isConnected) {
-    for (const { el } of remoteCursors.values()) el.hidden = true;
+    for (const { el, dragEl, selectionEls } of remoteCursors.values()) {
+      el.hidden = dragEl.hidden = true;
+      for (const highlight of selectionEls) highlight.hidden = true;
+    }
     return;
   }
   try {
@@ -231,45 +337,77 @@ function drawCursors(now) {
     const word = wordCursorDocument(win);
     const width = hwp ? surface.clientWidth : rect.width;
     const height = hwp ? surface.clientHeight : rect.height;
-    for (const [uid, { el, label, msg }] of remoteCursors) {
+    const left = origin.x + rect.left - layer.left, top = origin.y + rect.top - layer.top;
+    const project = (space, pageIndex, x, y) => {
+      if (space === 'viewport') return [x * width, y * height];
+      if (hwp && space === 'hwp') {
+        if (pageIndex == null) return [hwp.left - rect.left + x * hwp.zoom, y * hwp.zoom - surface.scrollTop];
+        const page = hwp.pages.find((p) => p.page === pageIndex && p.zoom > 0);
+        if (page) return [page.box.left - rect.left + x * page.zoom, page.box.top - rect.top + y * page.zoom];
+      }
+      if (word && space === 'word') {
+        const point = word.ConvertCoordsToCursor3(x, y, pageIndex, true);
+        if (point && !point.Error) return [point.X - rect.left, point.Y - rect.top];
+      }
+      return [];
+    };
+    const drawRect = (el, a, b, color, opacity) => {
+      const x = Math.max(0, Math.min(a[0], b[0]));
+      const y = Math.max(0, Math.min(a[1], b[1]));
+      const w = Math.min(width, Math.max(a[0], b[0], x + 1)) - x;
+      const h = Math.min(height, Math.max(a[1], b[1], y + 1)) - y;
+      el.hidden = !(w > 0 && h > 0) || Math.max(a[0], b[0]) < 0 || Math.max(a[1], b[1]) < 0;
+      if (el.hidden) return;
+      el.style.transform = `translate(${left + x}px, ${top + y}px)`;
+      el.style.width = `${w}px`;
+      el.style.height = `${h}px`;
+      el.style.color = color;
+      el.style.opacity = opacity;
+    };
+    for (const [uid, { el, label, msg, drag, dragEl, selection, selectionEls }] of remoteCursors) {
       const user = presence.users.find((u) => u.uid === uid);
-      let x, y;
+      if (drag) {
+        const { msg: d, fade } = drag;
+        const startPage = d.dp === undefined ? d.page : d.dp;
+        drawRect(dragEl, project(d.space, startPage, ...d.d), project(d.space, d.page, d.x, d.y),
+          user.color, (d.space === 'viewport' ? .72 : 1) * (fade ? (fade - now) / 600 : 1));
+      }
+      if (selection) {
+        const { space, page, sel } = selection.msg;
+        sel.forEach(([x, y, w, h], i) => {
+          drawRect(selectionEls[i], project(space, page, x, y), project(space, page, x + w, y + h),
+            user.color, space === 'viewport' ? .72 : 1);
+        });
+      }
+      if (msg.x === null) {
+        el.hidden = true;
+        continue;
+      }
       const approximate = msg.space === 'viewport' || (msg.space === 'word' && !word);
+      let x, y;
       if (approximate) {
-        x = (msg.vx ?? msg.x) * width;
-        y = (msg.vy ?? msg.y) * height;
-      } else if (hwp && msg.space === 'hwp') {
-        const page = hwp.pages.find((p) => p.page === msg.page && p.zoom > 0);
-        if (page) {
-          x = page.box.left - rect.left + msg.x * page.zoom;
-          y = page.box.top - rect.top + msg.y * page.zoom;
-        } else if (msg.page !== undefined) {
+        [x, y] = project('viewport', null, msg.vx ?? msg.x, msg.vy ?? msg.y);
+      } else if (word && msg.space === 'word' && (msg.page < word.m_lDrawingFirst || msg.page > word.m_lDrawingEnd)) {
+        x = width / 2;
+        y = msg.page < word.m_lDrawingFirst ? -1 : height + 1;
+      } else {
+        [x, y] = project(msg.space, msg.page, msg.x, msg.y);
+        if (x === undefined && hwp && msg.space === 'hwp' && msg.page !== undefined) {
           const visible = hwp.pages.filter((p) => p.page !== null && p.box.bottom > rect.top && p.box.top < rect.bottom);
           x = width / 2;
           y = visible.length && msg.page < Math.min(...visible.map((p) => p.page)) ? -1 : height + 1;
-        } else {
-          x = hwp.left - rect.left + msg.x * hwp.zoom;
-          y = msg.y * hwp.zoom - surface.scrollTop;
-        }
-      } else if (word && msg.space === 'word') {
-        if (msg.page < word.m_lDrawingFirst || msg.page > word.m_lDrawingEnd) {
-          x = width / 2;
-          y = msg.page < word.m_lDrawingFirst ? -1 : height + 1;
-        } else {
-          const point = word.ConvertCoordsToCursor3(msg.x, msg.y, msg.page, true);
-          if (point && !point.Error) { x = point.X - rect.left; y = point.Y - rect.top; }
         }
       }
       el.hidden = !width || !height || !Number.isFinite(x) || !Number.isFinite(y);
       if (el.hidden) continue;
       const side = hwp && (x < 0 || x >= width);
-      const top = y < 0 || (side && y < height / 2);
-      const bottom = y >= height || (side && y >= height / 2);
+      const atTop = y < 0 || (side && y < height / 2);
+      const atBottom = y >= height || (side && y >= height / 2);
       el.classList.toggle('approx', approximate);
-      el.classList.toggle('edge-top', top);
-      el.classList.toggle('edge-bottom', bottom);
-      x = Math.max(0, Math.min(width - (top || bottom ? 17 : 1), x)) + origin.x + rect.left - layer.left;
-      y = (top ? 0 : bottom ? Math.max(0, height - 19) : y) + origin.y + rect.top - layer.top;
+      el.classList.toggle('edge-top', atTop);
+      el.classList.toggle('edge-bottom', atBottom);
+      x = Math.max(0, Math.min(width - (atTop || atBottom ? 17 : 1), x)) + left;
+      y = (atTop ? 0 : atBottom ? Math.max(0, height - 19) : y) + top;
       el.classList.toggle('left-label', x > layer.width - 115);
       el.style.transform = `translate(${x}px, ${y}px)`;
       el.style.setProperty('--cursor-color', user.color);
@@ -752,7 +890,7 @@ async function main() {
       if (!on) {
         clearTimeout(cursorTimer);
         cursorTimer = 0;
-        pendingCursor = lastCursor = undefined;
+        pendingCursor = pendingRelease = lastCursor = dragStart = undefined;
         for (const uid of remoteCursors.keys()) removeRemoteCursor(uid);
       }
     }

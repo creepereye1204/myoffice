@@ -34,6 +34,23 @@ for (const kind of ['hwp', 'docx']) {
     const color = await avatar.evaluate((el) => getComputedStyle(el).backgroundColor);
     await expect(cursor).toHaveCSS('color', color);
     await expect(owner.page.locator('.remote-cursor')).toHaveCount(0);
+    if (kind === 'hwp') {
+      const paper = surface.locator('canvas.document-page-canvas:visible').first();
+      await expect(paper).toBeVisible();
+      const pageBox = await paper.boundingBox();
+      const left = Math.max(box.x, pageBox.x), top = Math.max(box.y, pageBox.y);
+      const width = Math.min(box.x + box.width, pageBox.x + pageBox.width) - left;
+      const height = Math.min(box.y + box.height, pageBox.y + pageBox.height) - top;
+      const drag = guest.page.locator(`.remote-drag[data-uid="${owner.uid}"]`);
+      await owner.page.mouse.move(left + width * .4, top + height * .4);
+      await owner.page.mouse.down();
+      await owner.page.mouse.move(left + width * .6, top + height * .55, { steps: 8 });
+      await expect(drag).toBeVisible();
+      await expect(drag).toHaveCSS('border-top-color', color);
+      await expect(cursor).toBeVisible();
+      await owner.page.mouse.up();
+      await expect(drag).toBeHidden({ timeout: 2500 });
+    }
     await owner.page.locator('#title').hover();
     await expect(cursor).toHaveCount(0, { timeout: 5000 });
     noErrors(owner.errors);

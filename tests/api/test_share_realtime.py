@@ -315,10 +315,23 @@ def test_ws_cursor_broadcast_validation_and_rate(http, U):
             await a.send({"type": "ping"})
             assert json.loads(await asyncio.wait_for(a.ws.recv(), 10)) == {"type": "pong"}
 
+            drag = {**move, "page": 1, "d": [30.25, 42], "dp": 0}
+            selection = {**move, "page": 1, "sel": [[120.5, 300 + i * 12, 42.75, 12] for i in range(20)]}
+            for update in (drag, selection):
+                await asyncio.sleep(0.06)
+                await a.send(update)
+                assert await b.wait(lambda m: m["type"] == "cursor") == {**update, "uid": uid}
+
             # 제한 간격을 넘긴 뒤에도 잘못된 좌표와 임의 필드는 전달되지 않는다.
             await asyncio.sleep(0.06)
             for invalid in ({**move, "x": True}, {**move, "y": "3"}, {**move, "x": 10**20},
                             {**move, "space": "viewport"}, {**move, "uid": "다른 사용자"},
+                            {**move, "d": [0, False]}, {**move, "d": [1, 2, 3]},
+                            {**move, "x": 0.5, "y": 0.5, "space": "viewport", "d": [0, 1.1]},
+                            {**move, "dp": 0}, {**drag, "dp": 100_000},
+                            {**selection, "sel": [[0, 0, 1, 1]] * 21},
+                            {**move, "sel": [[0, 0, 1, -1]]}, {**move, "sel": [[0, 0, 1]]},
+                            {**move, "sel": [[0, 0, 10**20, 1]]},
                             {"type": "cursor", "x": None, "extra": "x" * 300}):
                 await a.send(invalid)
             await a.send({"type": "ping"})
@@ -327,7 +340,7 @@ def test_ws_cursor_broadcast_validation_and_rate(http, U):
             assert json.loads(await asyncio.wait_for(b.ws.recv(), 10)) == {"type": "pong"}
 
             for i in range(80):
-                await a.send({**move, "x": i})
+                await a.send({**(drag if i % 2 else selection), "x": i})
             await a.send({"type": "ping"})
             await a.wait(lambda m: m["type"] == "pong")
             await b.send({"type": "ping"})

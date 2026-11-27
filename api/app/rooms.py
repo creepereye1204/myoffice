@@ -168,10 +168,14 @@ class Rooms:
                 keys.update(("page", "vx", "vy"))
             elif space == "hwp" and "page" in msg:
                 keys.add("page")
-            if msg.keys() != keys:
+            if msg.keys() - {"d", "dp", "sel"} != keys:
                 return False
             lo, hi = (0, 1) if space == "viewport" else (-1_000_000, 10_000_000)
-            if not all(type(v) in (int, float) and lo <= v <= hi for v in (x, y)):
+            def coords(values, length):
+                return (isinstance(values, (tuple, list)) and len(values) == length
+                        and all(type(v) in (int, float) and lo <= v <= hi for v in values))
+
+            if not coords((x, y), 2):
                 return False
             payload = {"x": x, "y": y, "space": space}
             if "page" in keys:
@@ -184,6 +188,23 @@ class Rooms:
                 if not all(type(v) in (int, float) and 0 <= v <= 1 for v in (vx, vy)):
                     return False
                 payload.update(vx=vx, vy=vy)
+            if "d" in msg:
+                if not coords(msg["d"], 2):
+                    return False
+                payload["d"] = msg["d"]
+            if "dp" in msg:
+                # 시작점은 현재 포인터와 다른 페이지에 있을 수 있다. 한글의 페이지 밖은 null이다.
+                dp = msg["dp"]
+                if ("d" not in msg or space == "viewport"
+                        or not ((dp is None and space == "hwp") or (type(dp) is int and 0 <= dp < 100_000))):
+                    return False
+                payload["dp"] = dp
+            if "sel" in msg:
+                sel = msg["sel"]
+                if (not isinstance(sel, list) or len(sel) > 20
+                        or not all(coords(r, 4) and r[2] > 0 and r[3] > 0 for r in sel)):
+                    return False
+                payload["sel"] = sel
         await self.broadcast(fid, {"type": "cursor", "uid": uid, **payload}, exclude=uid)
         return True
 
