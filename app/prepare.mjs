@@ -57,6 +57,7 @@ sh('docker', ['build', '-q', '-t', 'myoffice-app-web', path.join(ROOT, 'frontend
 copyOut('myoffice-app-web', '/usr/share/nginx/html', OUT);
 // 서버 전용 화면, 미리 압축한 .br/.gz, TTF 로 풀어 둔 woff/woff2 원본(편집기는 .woff.ttf 를 씀)은 앱에 필요 없음
 for (const f of ['login.html', 'login.js', 'admin.html', 'admin.js', '50x.html']) fs.rmSync(path.join(OUT, f), { force: true });
+fs.writeFileSync(path.join(OUT, 'analytics.js'), '// 앱: 분석 없음\n');
 walk(OUT, (p) => {
   if (/\.(br|gz)$/.test(p) || (/\.woff2?$/.test(p) && (fs.existsSync(`${p}.ttf`) || fs.existsSync(`${p}.otf`)))) fs.rmSync(p);
 });
