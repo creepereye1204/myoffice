@@ -1201,7 +1201,7 @@ async def export(body: Convert, a: Access = Depends(access)):
 @app.websocket("/ws/files/{fid}")
 async def file_socket(sock: WebSocket, fid: str, uid: str = "", name: str = "",
                       t: Optional[str] = None, s: Optional[str] = None):
-    """접속자 표시 + HWP 편집 잠금 + 저장 알림.
+    """접속자 표시 + 마우스 포인터 + HWP 편집 잠금 + 저장 알림.
     (Office 문서의 글자 단위 공동 편집은 ONLYOFFICE 자체 WebSocket이 처리한다.)"""
     origin = sock.headers.get("origin")
     if origin and origin not in CORS_ORIGINS:
@@ -1217,15 +1217,23 @@ async def file_socket(sock: WebSocket, fid: str, uid: str = "", name: str = "",
     await sock.accept()
     await rooms.join(fid, uid, name, sock, editor=can_edit(a))
     grace = None  # 갑자기 끊김: 편집 잠금을 잠시 유지
+    next_cursor = 0.0
     try:
         while True:
-            msg = await sock.receive_json()
+            raw = await sock.receive_text()
+            msg = json.loads(raw)
+            if not isinstance(msg, dict):
+                continue
             t = msg.get("type")
             if t == "bye":  # 창을 닫음 → 잠금을 바로 넘김
                 grace = 0
                 break
             if t == "ping":
                 await sock.send_json({"type": "pong"})
+            elif t == "cursor":
+                now = time.monotonic()
+                if now >= next_cursor and len(raw) <= 256 and await rooms.cursor(fid, uid, msg):
+                    next_cursor = now + 0.04
             elif t == "name":
                 await rooms.rename_user(fid, uid, clean_user(uid, msg.get("name"))[1])
             elif t == "release":

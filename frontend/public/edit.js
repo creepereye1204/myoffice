@@ -50,6 +50,234 @@ function renderPeople() {
 }
 $('#people').addEventListener('click', (e) => { if (e.target.closest('.avatar.me')) askName(true); });
 
+// ---------------------------------------------------------------- 마우스 포인터
+const remoteCursors = new Map();
+let cursorFrame = 0, cursorTimer = 0, cursorOnline = false;
+let pendingCursor, lastCursor, lastCursorTime = -Infinity;
+
+function flushCursor() {
+  cursorTimer = 0;
+  if (!cursorOnline || !pendingCursor || (document.hidden && pendingCursor.x !== null)) return;
+  const pos = pendingCursor;
+  pendingCursor = undefined;
+  const key = JSON.stringify(pos);
+  if (key === lastCursor) return;
+  room.send({ type: 'cursor', ...pos });
+  lastCursor = pos.x === null ? undefined : key;
+  lastCursorTime = performance.now();
+}
+
+function queueCursor(pos) {
+  if (!cursorOnline || (pos.x === null && !lastCursor && !pendingCursor)) return;
+  pendingCursor = pos;
+  if (cursorTimer) return;
+  const delay = 50 - (performance.now() - lastCursorTime);
+  if (delay <= 0) flushCursor();
+  else cursorTimer = setTimeout(flushCursor, Math.ceil(delay));
+}
+
+function hideCursor() {
+  if (lastCursor) queueCursor({ x: null });
+  else pendingCursor = undefined;
+}
+
+// 중첩 iframe 좌표도 바깥 창 기준으로 맞춘다.
+function cursorOrigin(win) {
+  let x = 0, y = 0;
+  while (win !== window) {
+    const frame = win.frameElement;
+    const rect = frame.getBoundingClientRect();
+    x += rect.left + frame.clientLeft;
+    y += rect.top + frame.clientTop;
+    win = win.parent;
+  }
+  return { x, y };
+}
+
+function cursorEditorSurface(win) {
+  const doc = win.document;
+  const scroll = doc.querySelector('#scroll-container');
+  if (file.type === 'hwp' && scroll && win.frameElement?.matches('#hwp iframe')) return scroll;
+  if (win.frameElement?.name === 'frameEditor') return doc.querySelector('#editor_sdk');
+  return null;
+}
+
+function hwpCursorLayout(scroll) {
+  const rect = scroll.getBoundingClientRect();
+  const pages = [...scroll.querySelectorAll('canvas.document-page-canvas')].map((canvas) => {
+    // 렌더 캐시 키의 페이지 번호·원본 폭으로 자동 배치와 맞춤 배율에서도 같은 종이 위치를 찾는다.
+    const match = canvas.dataset.rhwpSurfaceCacheLookupKey?.match(/\|page:(\d+)\|geometry:([\d.]+)x/);
+    const box = canvas.getBoundingClientRect();
+    return { page: match ? Number(match[1]) : null, box, zoom: match ? box.width / Number(match[2]) : 0 };
+  });
+  const zoom = pages.find((p) => p.zoom > 0)?.zoom ||
+    parseFloat(scroll.ownerDocument.querySelector('#sb-zoom-val')?.textContent) / 100;
+  const left = pages.find((p) => p.box.bottom > rect.top && p.box.top < rect.bottom)?.box.left ?? rect.left;
+  return { rect, pages, zoom, left };
+}
+
+function wordCursorDocument(win) {
+  // 워드: WordControl 의 페이지 변환기가 현재 스크롤, 배율, 눈금자 위치를 반영한다.
+  // 셀은 시트·틀 고정, 슬라이드는 현재 장표에 따라 기준이 달라 viewport 비율을 쓴다.
+  if (file.type !== 'word') return null;
+  const sdk = win.Asc?.editor || win.editor;
+  const drawing = sdk?.WordControl?.m_oDrawingDocument;
+  return typeof drawing?.ConvertCoordsFromCursor2 === 'function' &&
+    typeof drawing.ConvertCoordsToCursor3 === 'function' ? drawing : null;
+}
+
+function cursorPosition(win, surface, x, y) {
+  const rect = surface.getBoundingClientRect();
+  const width = file.type === 'hwp' ? surface.clientWidth : rect.width;
+  const height = file.type === 'hwp' ? surface.clientHeight : rect.height;
+  if (!width || !height || x < rect.left || y < rect.top || x >= rect.left + width || y >= rect.top + height) return null;
+  if (file.type === 'hwp') {
+    const layout = hwpCursorLayout(surface);
+    const page = layout.pages.find((p) => p.page !== null && p.zoom > 0 &&
+      x >= p.box.left && x < p.box.right && y >= p.box.top && y < p.box.bottom);
+    if (page) return { space: 'hwp', page: page.page, x: (x - page.box.left) / page.zoom, y: (y - page.box.top) / page.zoom };
+    // 페이지 밖은 스크롤과 배율을 제거한 문서 좌표를 쓴다.
+    if (!(layout.zoom > 0)) return null;
+    return { space: 'hwp', x: (x - layout.left) / layout.zoom, y: (y - rect.top + surface.scrollTop) / layout.zoom };
+  }
+  const vx = (x - rect.left) / width, vy = (y - rect.top) / height;
+  try {
+    const point = wordCursorDocument(win)?.ConvertCoordsFromCursor2(x, y);
+    if (Number.isInteger(point?.DrawPage) && point.DrawPage >= 0 && Number.isFinite(point.X) && Number.isFinite(point.Y)) {
+      return { space: 'word', page: point.DrawPage, x: point.X, y: point.Y, vx, vy };
+    }
+  } catch { /* SDK 가 문서 화면을 아직 준비하는 중일 수 있다 */ }
+  // 워드도 SDK 변환을 사용할 수 없는 화면에서는 흐리게 표시한다.
+  return { space: 'viewport', x: vx, y: vy };
+}
+
+let cursorSurface;
+const cursorDocs = new WeakSet();
+function hookCursorWin(win) {
+  const doc = win.document;
+  const surface = cursorEditorSurface(win);
+  if (surface) cursorSurface = { win, surface };
+  if (cursorDocs.has(doc)) return;
+  cursorDocs.add(doc);
+  win.addEventListener('pointermove', (e) => {
+    if (document.hidden || !e.isPrimary || !cursorSurface?.surface.isConnected) return;
+    const { win: target, surface } = cursorSurface;
+    const from = cursorOrigin(win), to = cursorOrigin(target);
+    const pos = cursorPosition(target, surface, e.clientX + from.x - to.x, e.clientY + from.y - to.y);
+    if (pos) queueCursor(pos); else hideCursor();
+  }, true);
+  doc.addEventListener('pointerout', (e) => { if (!e.relatedTarget) hideCursor(); }, true);
+  win.addEventListener('blur', hideCursor);
+  win.addEventListener('pagehide', hideCursor);
+}
+
+function startCursors() {
+  const scan = () => {
+    // 편집기 아래의 같은 출처 프레임만 훑는다. 문서가 바뀌거나 늦게 만들어진 프레임도 다시 연결한다.
+    for (const frame of document.querySelectorAll('#hwp iframe, #oo-holder iframe')) hookFrames(frame.contentWindow, hookCursorWin);
+  };
+  scan();
+  setInterval(scan, 500);
+  $('#stage').addEventListener('pointerleave', hideCursor);
+  $('#stage').addEventListener('pointermove', hideCursor);
+  window.addEventListener('blur', hideCursor);
+  window.addEventListener('pagehide', hideCursor);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) hideCursor(); });
+}
+
+function removeRemoteCursor(uid) {
+  remoteCursors.get(uid)?.el.remove();
+  remoteCursors.delete(uid);
+}
+
+function receiveCursor(msg) {
+  if (msg.uid === me.uid) return;
+  const user = presence.users.find((u) => u.uid === msg.uid);
+  if (msg.x === null || !user) return removeRemoteCursor(msg.uid);
+  let entry = remoteCursors.get(msg.uid);
+  if (!entry) {
+    const el = document.createElement('div');
+    el.className = 'remote-cursor';
+    el.dataset.uid = msg.uid;
+    el.hidden = true;
+    el.innerHTML = '<svg viewBox="0 0 16 19"><path d="M2 1l12 11-6 1-3 5z" fill="currentColor" stroke="white" stroke-linejoin="round"/></svg><span></span>';
+    $('#remote-cursors').appendChild(el);
+    entry = { el, label: el.querySelector('span') };
+    remoteCursors.set(msg.uid, entry);
+  }
+  entry.msg = msg;
+  entry.expires = performance.now() + 10000;
+  if (!cursorFrame) drawCursors(performance.now());
+}
+
+function drawCursors(now) {
+  cursorFrame = 0;
+  for (const [uid, entry] of remoteCursors) {
+    const user = presence.users.find((u) => u.uid === uid);
+    if (!user || now >= entry.expires) removeRemoteCursor(uid);
+  }
+  if (!remoteCursors.size) return;
+  // 스크롤·확대 중에는 새 패킷이 없어도 현재 편집기 위치로 다시 그린다.
+  cursorFrame = requestAnimationFrame(drawCursors);
+  if (!cursorSurface?.surface.isConnected) {
+    for (const { el } of remoteCursors.values()) el.hidden = true;
+    return;
+  }
+  try {
+    const { win, surface } = cursorSurface;
+    const rect = surface.getBoundingClientRect(), origin = cursorOrigin(win);
+    const layer = $('#remote-cursors').getBoundingClientRect();
+    const hwp = file.type === 'hwp' ? hwpCursorLayout(surface) : null;
+    const word = wordCursorDocument(win);
+    const width = hwp ? surface.clientWidth : rect.width;
+    const height = hwp ? surface.clientHeight : rect.height;
+    for (const [uid, { el, label, msg }] of remoteCursors) {
+      const user = presence.users.find((u) => u.uid === uid);
+      let x, y;
+      const approximate = msg.space === 'viewport' || (msg.space === 'word' && !word);
+      if (approximate) {
+        x = (msg.vx ?? msg.x) * width;
+        y = (msg.vy ?? msg.y) * height;
+      } else if (hwp && msg.space === 'hwp') {
+        const page = hwp.pages.find((p) => p.page === msg.page && p.zoom > 0);
+        if (page) {
+          x = page.box.left - rect.left + msg.x * page.zoom;
+          y = page.box.top - rect.top + msg.y * page.zoom;
+        } else if (msg.page !== undefined) {
+          const visible = hwp.pages.filter((p) => p.page !== null && p.box.bottom > rect.top && p.box.top < rect.bottom);
+          x = width / 2;
+          y = visible.length && msg.page < Math.min(...visible.map((p) => p.page)) ? -1 : height + 1;
+        } else {
+          x = hwp.left - rect.left + msg.x * hwp.zoom;
+          y = msg.y * hwp.zoom - surface.scrollTop;
+        }
+      } else if (word && msg.space === 'word') {
+        if (msg.page < word.m_lDrawingFirst || msg.page > word.m_lDrawingEnd) {
+          x = width / 2;
+          y = msg.page < word.m_lDrawingFirst ? -1 : height + 1;
+        } else {
+          const point = word.ConvertCoordsToCursor3(msg.x, msg.y, msg.page, true);
+          if (point && !point.Error) { x = point.X - rect.left; y = point.Y - rect.top; }
+        }
+      }
+      el.hidden = !width || !height || !Number.isFinite(x) || !Number.isFinite(y);
+      if (el.hidden) continue;
+      const side = hwp && (x < 0 || x >= width);
+      const top = y < 0 || (side && y < height / 2);
+      const bottom = y >= height || (side && y >= height / 2);
+      el.classList.toggle('approx', approximate);
+      el.classList.toggle('edge-top', top);
+      el.classList.toggle('edge-bottom', bottom);
+      x = Math.max(0, Math.min(width - (top || bottom ? 17 : 1), x)) + origin.x + rect.left - layer.left;
+      y = (top ? 0 : bottom ? Math.max(0, height - 19) : y) + origin.y + rect.top - layer.top;
+      el.classList.toggle('left-label', x > layer.width - 115);
+      el.style.transform = `translate(${x}px, ${y}px)`;
+      el.style.setProperty('--cursor-color', user.color);
+      if (label.textContent !== user.name) label.textContent = user.name;
+    }
+  } catch { /* 프레임 이동 중이면 다음 화면에서 다시 그린다 */ }
+}
+
 // ---------------------------------------------------------------- ONLYOFFICE (실시간 공동 편집은 ONLYOFFICE 자체 WebSocket)
 async function openOnlyOffice() {
   const mobile = matchMedia('(max-width: 700px)').matches;
@@ -212,10 +440,10 @@ function hookWin(win) {
   } catch { /* 다른 출처 */ }
 }
 // ONLYOFFICE 는 iframe 안에 또 iframe 을 만든다 → 같은 출처 frame 을 주기적으로 찾아 건다
-function hookFrames(win = window) {
+function hookFrames(win = window, hook = hookWin) {
   try {
-    hookWin(win);
-    for (let i = 0; i < win.frames.length; i++) hookFrames(win.frames[i]);
+    hook(win);
+    for (let i = 0; i < win.frames.length; i++) hookFrames(win.frames[i], hook);
   } catch { /* 다른 출처 */ }
 }
 
@@ -495,11 +723,12 @@ async function main() {
     });
   }
 
-  // 실시간 방 (접속자, HWP 잠금, 저장 알림)
+  // 실시간 방 (접속자, 마우스 포인터, HWP 잠금, 저장 알림)
   room = connectRoom(id, async (m) => {
     if (m.type === 'presence') {
       const before = presence.users.length;
       presence = m; renderPeople();
+      for (const uid of remoteCursors.keys()) if (!m.users.some((u) => u.uid === uid)) removeRemoteCursor(uid);
       if (before && m.users.length > before) toast(`${m.users[m.users.length - 1].name}님이 들어왔습니다`);
       if (file.type === 'hwp' && m.lock === me.uid && m.requests?.length) {
         const who = m.users.find((u) => u.uid === m.requests[0]);
@@ -508,6 +737,8 @@ async function main() {
         });
       }
       if (file.type === 'hwp' && !(m.lock === me.uid && m.requests?.length)) applyLock();
+    } else if (!LOCAL && m.type === 'cursor') {
+      receiveCursor(m);
     } else if (m.type === 'saved' && file.type === 'hwp' && editor && !canWrite) {
       reloadHwp(m.by).catch(() => {});
     } else if (m.type === 'oo-saved') {
@@ -516,9 +747,20 @@ async function main() {
       file.name = m.name; if (document.activeElement !== t) t.value = base(); document.title = `${file.name} — 알오피스`;
     }
   }, (on) => {
+    if (!LOCAL) {
+      cursorOnline = on;
+      if (!on) {
+        clearTimeout(cursorTimer);
+        cursorTimer = 0;
+        pendingCursor = lastCursor = undefined;
+        for (const uid of remoteCursors.keys()) removeRemoteCursor(uid);
+      }
+    }
     clearTimeout(connTimer);
     if (on) connected = true; else connTimer = setTimeout(() => { connected = false; applyLock(); }, 8000);
     $('#conn').classList.toggle('on', on); $('#conn').title = on ? '실시간 연결됨' : '연결 끊김 — 다시 연결 중'; });
+
+  if (!LOCAL) startCursors();
 
   // 창을 닫거나 다른 페이지로 갈 때는 편집 잠금을 바로 넘긴다 (갑작스러운 끊김만 잠시 유지)
   window.addEventListener('pagehide', (e) => { if (!e.persisted) room.bye(); });

@@ -74,15 +74,17 @@ class Rooms:
             m = r.members[uid]
             if sock in m.socks:
                 m.socks.remove(sock)
-            if not m.socks:
-                if r.lock == uid and grace > 0:
-                    # 연결이 끊긴 편집자: 잠시 잠금 유지 → 다시 들어오면 그대로, 아니면 넘김
-                    asyncio.create_task(self._expire(fid, uid, grace))
-                    return
+            departed = not m.socks
+            keep_lock = departed and r.lock == uid and grace > 0
+            if keep_lock:
+                # 연결이 끊긴 편집자: 잠시 잠금 유지 → 다시 들어오면 그대로, 아니면 넘김
+                asyncio.create_task(self._expire(fid, uid, grace))
+            elif departed:
                 self._remove(fid, r, uid)
-            if fid not in self.rooms:
-                return
-        await self.presence(fid)
+        if departed:
+            await self.broadcast(fid, {"type": "cursor", "uid": uid, "x": None}, exclude=uid)
+        if not keep_lock:
+            await self.presence(fid)
 
     async def _expire(self, fid: str, uid: str, grace: float) -> None:
         await asyncio.sleep(grace)
@@ -149,6 +151,41 @@ class Rooms:
                  for m in r.members.values()]
         await self.broadcast(fid, {"type": "presence", "users": users, "lock": r.lock,
                                    "requests": sorted(r.requests)})
+
+    async def cursor(self, fid: str, uid: str, msg: dict) -> bool:
+        # 포인터는 검증한 좌표만 전달하고 방 상태에는 남기지 않는다.
+        x = msg.get("x")
+        if x is None:
+            if msg.keys() != {"type", "x"}:
+                return False
+            payload = {"x": None}
+        else:
+            y, space = msg.get("y"), msg.get("space")
+            if space not in ("hwp", "word", "viewport"):
+                return False
+            keys = {"type", "x", "y", "space"}
+            if space == "word":
+                keys.update(("page", "vx", "vy"))
+            elif space == "hwp" and "page" in msg:
+                keys.add("page")
+            if msg.keys() != keys:
+                return False
+            lo, hi = (0, 1) if space == "viewport" else (-1_000_000, 10_000_000)
+            if not all(type(v) in (int, float) and lo <= v <= hi for v in (x, y)):
+                return False
+            payload = {"x": x, "y": y, "space": space}
+            if "page" in keys:
+                page = msg["page"]
+                if type(page) is not int or not 0 <= page < 100_000:
+                    return False
+                payload["page"] = page
+            if space == "word":
+                vx, vy = msg["vx"], msg["vy"]
+                if not all(type(v) in (int, float) and 0 <= v <= 1 for v in (vx, vy)):
+                    return False
+                payload.update(vx=vx, vy=vy)
+        await self.broadcast(fid, {"type": "cursor", "uid": uid, **payload}, exclude=uid)
+        return True
 
     async def broadcast(self, fid: str, msg: dict, exclude: str | None = None) -> None:
         r = self.rooms.get(fid)

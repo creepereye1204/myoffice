@@ -297,3 +297,56 @@ def test_ws_lock_moves_after_grace(http, U):
                 m = await B.presence(lambda m: m["lock"] == "guest1", timeout=15)
                 assert [u["uid"] for u in m["users"]] == ["guest1"]
     run(go())
+
+
+def test_ws_cursor_broadcast_validation_and_rate(http, U):
+    f = make(http, hdr(U), "hwp")
+    tok = share(http, hdr(U), f["id"], "view")
+    uid = f"u{U['_id']}"
+    move = {"type": "cursor", "space": "hwp", "x": 120.5, "y": 300}
+
+    async def go():
+        async with Client(f["id"], "owner", "소유자", t=U["_token"]) as a, \
+                   Client(f["id"], "viewer", "보기", s=tok) as b:
+            await a.presence(lambda m: len(m["users"]) == 2)
+            await b.presence()
+            await a.send(move)
+            assert await b.wait(lambda m: m["type"] == "cursor") == {**move, "uid": uid}
+            await a.send({"type": "ping"})
+            assert json.loads(await asyncio.wait_for(a.ws.recv(), 10)) == {"type": "pong"}
+
+            # 제한 간격을 넘긴 뒤에도 잘못된 좌표와 임의 필드는 전달되지 않는다.
+            await asyncio.sleep(0.06)
+            for invalid in ({**move, "x": True}, {**move, "y": "3"}, {**move, "x": 10**20},
+                            {**move, "space": "viewport"}, {**move, "uid": "다른 사용자"},
+                            {"type": "cursor", "x": None, "extra": "x" * 300}):
+                await a.send(invalid)
+            await a.send({"type": "ping"})
+            await a.wait(lambda m: m["type"] == "pong")
+            await b.send({"type": "ping"})
+            assert json.loads(await asyncio.wait_for(b.ws.recv(), 10)) == {"type": "pong"}
+
+            for i in range(80):
+                await a.send({**move, "x": i})
+            await a.send({"type": "ping"})
+            await a.wait(lambda m: m["type"] == "pong")
+            await b.send({"type": "ping"})
+            received = 0
+            while True:
+                msg = json.loads(await asyncio.wait_for(b.ws.recv(), 10))
+                if msg["type"] == "pong":
+                    break
+                assert msg["type"] == "cursor" and msg["uid"] == uid
+                received += 1
+            assert 0 < received < 80
+
+            await asyncio.sleep(0.06)
+            await a.send({"type": "cursor", "x": None})
+            assert await b.wait(lambda m: m["type"] == "cursor") == {"type": "cursor", "uid": uid, "x": None}
+
+            await b.send(move)
+            assert await a.wait(lambda m: m["type"] == "cursor") == {**move, "uid": "viewer"}
+            await b.send({"type": "bye"})
+            assert await a.wait(lambda m: m["type"] == "cursor") == {"type": "cursor", "uid": "viewer", "x": None}
+
+    run(go())

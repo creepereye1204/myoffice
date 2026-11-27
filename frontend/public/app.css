@@ -168,6 +168,18 @@ dialog input { width: 100%; padding: 9px 12px; border: 1px solid var(--line); bo
 #oo-holder, #hwp { position: absolute; inset: 0; }
 #hwp:empty { display: none; }
 #hwp iframe { border: 0; display: block; }
+#remote-cursors { position: absolute; inset: 0; z-index: 4; overflow: hidden; pointer-events: none; }
+.remote-cursor { position: absolute; top: 0; left: 0; color: var(--cursor-color); transition: transform 80ms linear; }
+.remote-cursor svg { display: block; width: 16px; height: 19px; }
+.remote-cursor span { position: absolute; top: 14px; left: 11px; padding: 2px 6px; border-radius: 4px; background: var(--cursor-color); color: #fff; font-size: 11px; font-weight: 700; white-space: nowrap; max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+.remote-cursor.approx { opacity: .72; }
+.remote-cursor.left-label span { left: auto; right: 2px; }
+.remote-cursor.edge-top svg { transform: rotate(32deg) scale(.8); }
+.remote-cursor.edge-bottom svg { transform: rotate(212deg) scale(.8); }
+.remote-cursor.edge-bottom span { top: auto; bottom: 14px; }
+@media (prefers-reduced-motion: reduce) {
+  .remote-cursor { transition: none; }
+}
 .loading { position: absolute; inset: 0; z-index: 5; display: grid; place-content: center; justify-items: center; gap: 14px; color: var(--muted); background: var(--bg); }
 .spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
