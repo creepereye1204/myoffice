@@ -199,92 +199,30 @@ function hwpSelectionRects(surface) {
   return rects;
 }
 
-function wordSelectionRects(sdk, surface) {
-  const corners = sdk?.asc_GetSelectionBounds?.();
-  const viewer = surface.querySelector('#id_viewer')?.getBoundingClientRect();
-  if (!viewer?.width || !viewer.height || corners?.length !== 4 ||
-      !corners.every((p) => p?.length === 2 && p.every(Number.isFinite))) return [];
-  const [[x1, y1], [, bottom1], [x2, y2], [, bottom2]] = corners;
-  if (bottom1 <= y1 || bottom2 <= y2 || !sdk.asc_GetSelectedText?.(true)) return [];
-
-  // 공개 API는 편집기 화면의 시작·끝 줄 좌표를 준다. 중간 줄은 본문 폭을 근사한다.
-  const root = surface.getBoundingClientRect();
-  const left = viewer.left - root.left, top = viewer.top - root.top;
-  const right = left + viewer.width, bottom = top + viewer.height;
-  const rects = [];
-  const add = (x, y, xEnd, yEnd) => {
-    x = Math.max(left, x);
-    y = Math.max(top, y);
-    xEnd = Math.min(right, xEnd);
-    yEnd = Math.min(bottom, yEnd);
-    if (xEnd > x && yEnd > y) rects.push([0, (x - left) / viewer.width, (y - top) / viewer.height,
-      (xEnd - x) / viewer.width, (yEnd - y) / viewer.height]);
-  };
-  if (Math.abs(y2 - y1) <= 1) {
-    add(Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(bottom1, bottom2));
-  } else if (y2 > y1) {
-    const textLeft = Math.min(x1, x2, left + viewer.width * .12);
-    const textRight = Math.max(x1, x2, right - viewer.width * .12);
-    add(x1, y1, textRight, Math.min(bottom1, y2));
-    add(textLeft, bottom1, textRight, y2);
-    add(textLeft, y2, x2, bottom2);
-  }
-  return rects;
-}
-
-function cellRange(address) {
-  // 공개 범위 이름은 A1 형식이며 행·열 전체 선택에서는 한 축을 생략한다.
-  const match = typeof address === 'string' && address.split('!').at(-1)
-    .match(/^\$?([A-Z]{1,3})?\$?(\d{1,7})?(?::\$?([A-Z]{1,3})?\$?(\d{1,7})?)?$/i);
-  if (!match) return null;
-  const [, c1, r1, c2 = c1, r2 = r1] = match;
-  if (!c1 && !r1) return null;
-  const column = (name) => [...name.toUpperCase()].reduce((n, char) => n * 26 + char.charCodeAt(0) - 64, 0) - 1;
-  const range = [r1 ? Number(r1) - 1 : 0, c1 ? column(c1) : 0,
-    r2 ? Number(r2) - 1 : 1_048_575, c2 ? column(c2) : 16_383];
-  const [startRow, startCol, endRow, endCol] = range;
-  return startRow >= 0 && startCol >= 0 && startRow <= endRow && startCol <= endCol &&
-    endRow < 1_048_576 && endCol < 16_384 ? range : null;
-}
-
-function cellSelectionBoxes(win, rect, selection) {
-  const sdk = officeSdk(win);
-  if (sdk?.asc_getActiveWorksheetIndex?.() !== selection.sheet) return [];
-  const canvas = win.document.querySelector('#ws-canvas');
-  const anchor = cellRange(sdk.asc_getActiveRangeStr?.(undefined, true, true));
-  const coord = sdk.asc_getActiveCellCoord?.();
-  if (!canvas || !anchor || !coord) return [];
-  const x = coord.asc_getX?.(), y = coord.asc_getY?.();
-  const w = coord.asc_getWidth?.(), h = coord.asc_getHeight?.();
-  if (![x, y, w, h].every(Number.isFinite) || !w || h <= 0) return [];
-  const box = canvas.getBoundingClientRect();
-  // 임의 셀의 좌표는 공개되지 않아 수신 측 활성 셀의 위치와 크기를 기준으로 근사한다.
-  const [row, col] = anchor;
-  const boxes = [];
-  for (const [r1, c1, r2, c2] of selection.ranges) {
-    const a = x + (c1 - col) * w, b = x + (c2 + 1 - col) * w;
-    const left = Math.max(0, Math.min(a, b)), right = Math.min(box.width, Math.max(a, b));
-    const top = Math.max(0, y + (r1 - row) * h), bottom = Math.min(box.height, y + (r2 + 1 - row) * h);
-    if (left < right && top < bottom) boxes.push([
-      [box.left - rect.left + left, box.top - rect.top + top],
-      [box.left - rect.left + right, box.top - rect.top + bottom],
-    ]);
-  }
-  return boxes;
-}
-
 function readTextSelection(win, surface) {
   const sdk = file.type !== 'hwp' && officeSdk(win);
   if (file.type === 'cell') {
-    const sheet = sdk?.asc_getActiveWorksheetIndex?.();
-    const range = cellRange(sdk?.asc_getActiveRangeStr?.(undefined, false, true));
-    return Number.isInteger(sheet) && sheet >= 0 && range ? { space: 'cell', sheet, ranges: [range] } : null;
+    const range = sdk?.asc_getActiveRangeStr?.(undefined, false, true);
+    if (typeof range !== 'string') return null;
+    const [start, end] = range.replace(/\$/g, '').split(':');
+    // 행·열 전체 선택은 같은 행·열 이름이 반복되어도 여러 셀을 포함한다.
+    if (!end || (start === end && /^[A-Z]+\d+$/i.test(start))) return null;
+    const index = sdk.asc_getActiveWorksheetIndex?.();
+    const sheet = Number.isInteger(index) && index >= 0 ? sdk.asc_getWorksheetName?.(index) : '';
+    // 범위 길이 제한 안에서 시트 이름을 함께 보낸다.
+    let qualified = range;
+    if (typeof sheet === 'string' && sheet && !/[\u0000-\u001f\u007f:[\]\\/?*]/.test(sheet)) {
+      const name = /^[\p{L}\p{N}_.]+$/u.test(sheet) ? sheet : `'${sheet.replace(/'/g, "''")}'`;
+      qualified = `${name}!${range}`;
+    }
+    return { space: 'text', text: '', range: [...qualified].length <= 40 ? qualified : range };
   }
-  if (file.type === 'word') {
-    const rects = wordSelectionRects(sdk, surface)
-      .map((r) => r.map((v) => Math.floor(v * 10000) / 10000))
-      .filter(([, , , w, h]) => w > 0 && h > 0);
-    return rects.length ? { space: 'viewport', rects } : null;
+  if (file.type === 'word' || file.type === 'slide') {
+    const selected = sdk?.asc_GetSelectedText?.(true);
+    if (typeof selected !== 'string') return null;
+    const chars = [...selected.replace(/\s+/g, ' ').trim()];
+    const text = chars.length > 40 ? chars.slice(0, 40).join('') + '…' : chars.join('');
+    return text ? { space: 'text', text, range: null } : null;
   }
   if (file.type !== 'hwp') return null;
   const rects = hwpSelectionRects(surface)
@@ -325,17 +263,13 @@ function hookCursorWin(win) {
   const surface = cursorEditorSurface(win);
   if (surface) {
     cursorSurface = { win, surface };
-    const sdk = (file.type === 'word' || file.type === 'cell') && officeSdk(win);
+    const sdk = file.type === 'cell' && officeSdk(win);
     if (sdk?.asc_registerCallback && !selectionSdks.has(sdk)) {
       selectionSdks.add(sdk);
       const sync = () => queueMicrotask(() => {
         if (cursorSurface?.win === win && surface.isConnected) updateTextSelection();
       });
-      if (file.type === 'cell') sdk.asc_registerCallback('asc_onSelectionChanged', sync);
-      if (file.type === 'word') {
-        sdk.asc_registerCallback('asc_onCurrentPage', sync);
-        sdk.asc_registerCallback('asc_onZoomChange', sync);
-      }
+      sdk.asc_registerCallback('asc_onSelectionChanged', sync);
     }
   }
   if (cursorDocs.has(doc)) return;
@@ -411,6 +345,7 @@ function removeRemoteCursor(uid) {
   const entry = remoteCursors.get(uid);
   entry.el.remove();
   entry.dragEl.remove();
+  entry.chip?.remove();
   for (const el of entry.selectionEls) el.remove();
   for (const el of entry.textEls) el.remove();
   remoteCursors.delete(uid);
@@ -452,13 +387,14 @@ function receiveCursor(msg) {
     entry.msg = msg;
     entry.expires = now + 10000;
   }
-  if (msg.sel?.length) {
+  if (file.type === 'hwp' && msg.sel?.length) {
     for (const el of entry.selectionEls) el.remove();
     entry.selectionEls = msg.sel.map(() => cursorRect('remote-selection', msg.uid));
     entry.selection = { msg, expires: now + 3000 };
   }
   if ('ts' in msg) {
-    entry.text = msg.ts ? { selection: msg.ts, expires: now + 60000 } : undefined;
+    const space = file.type === 'hwp' ? 'hwp' : 'text';
+    entry.text = msg.ts?.space === space ? { selection: msg.ts, expires: now + 60000 } : undefined;
     if (!entry.text) clearTextRects(entry);
   }
   if (!cursorFrame) drawCursors(now);
@@ -467,6 +403,32 @@ function receiveCursor(msg) {
 function clearTextRects(entry) {
   for (const el of entry.textEls) el.remove();
   entry.textEls.length = 0;
+}
+
+function updateSelectionLabel(uid, entry, user) {
+  const ts = entry.text?.selection;
+  const value = ts?.space === 'text' && (ts.range || (ts.text && `‘${ts.text}’`));
+  const caption = value ? `${user.name} · ${value} 선택` : user.name;
+  const { el, label } = entry;
+  el.classList.toggle('has-selection', Boolean(value));
+  if (label.textContent !== caption) label.textContent = caption;
+
+  if (value && el.hidden) {
+    if (!entry.chip?.isConnected) {
+      const avatar = $('#people').querySelector(`.avatar[data-uid="${CSS.escape(uid)}"]`);
+      if (!avatar) return;
+      entry.chip = document.createElement('span');
+      entry.chip.className = 'avatar-selection';
+      avatar.appendChild(entry.chip);
+    }
+    if (entry.chip.textContent !== caption) {
+      entry.chip.textContent = caption;
+      entry.chip.title = caption;
+    }
+  } else {
+    entry.chip?.remove();
+    entry.chip = undefined;
+  }
 }
 
 function drawCursors(now) {
@@ -493,10 +455,11 @@ function drawCursors(now) {
   // 스크롤·확대 중에는 새 패킷이 없어도 현재 편집기 위치로 다시 그린다.
   cursorFrame = requestAnimationFrame(drawCursors);
   if (!cursorSurface?.surface.isConnected) {
-    for (const { el, dragEl, selectionEls, textEls } of remoteCursors.values()) {
-      el.hidden = dragEl.hidden = true;
-      for (const highlight of selectionEls) highlight.hidden = true;
-      for (const highlight of textEls) highlight.hidden = true;
+    for (const [uid, entry] of remoteCursors) {
+      entry.el.hidden = entry.dragEl.hidden = true;
+      for (const highlight of entry.selectionEls) highlight.hidden = true;
+      for (const highlight of entry.textEls) highlight.hidden = true;
+      updateSelectionLabel(uid, entry, presence.users.find((u) => u.uid === uid));
     }
     return;
   }
@@ -505,12 +468,9 @@ function drawCursors(now) {
     const rect = surface.getBoundingClientRect(), origin = cursorOrigin(win);
     const layer = $('#remote-cursors').getBoundingClientRect();
     const hwp = file.type === 'hwp' ? hwpCursorLayout(surface) : null;
-    const viewer = file.type === 'word' ? surface.querySelector('#id_viewer')?.getBoundingClientRect() : null;
     const width = hwp ? surface.clientWidth : rect.width;
     const height = hwp ? surface.clientHeight : rect.height;
     const left = origin.x + rect.left - layer.left, top = origin.y + rect.top - layer.top;
-    const textClip = viewer ? [viewer.left - rect.left, viewer.top - rect.top, viewer.right - rect.left, viewer.bottom - rect.top] :
-      [0, 0, width, height];
     const project = (space, pageIndex, x, y) => {
       if (space === 'viewport') return [x * width, y * height];
       if (hwp && space === 'hwp') {
@@ -521,11 +481,10 @@ function drawCursors(now) {
       return [];
     };
     const drawRect = (el, a, b, color, opacity, minimum = 1) => {
-      const [l, t, r, bot] = minimum ? [0, 0, width, height] : textClip;
-      const x = Math.max(0, l, Math.min(a[0], b[0]));
-      const y = Math.max(0, t, Math.min(a[1], b[1]));
-      const w = Math.min(width, r, Math.max(a[0], b[0], x + minimum)) - x;
-      const h = Math.min(height, bot, Math.max(a[1], b[1], y + minimum)) - y;
+      const x = Math.max(0, Math.min(a[0], b[0]));
+      const y = Math.max(0, Math.min(a[1], b[1]));
+      const w = Math.min(width, Math.max(a[0], b[0], x + minimum)) - x;
+      const h = Math.min(height, Math.max(a[1], b[1], y + minimum)) - y;
       el.hidden = !(w > 0 && h > 0) || Math.max(a[0], b[0]) < 0 || Math.max(a[1], b[1]) < 0;
       if (el.hidden) return;
       el.style.transform = `translate(${left + x}px, ${top + y}px)`;
@@ -534,9 +493,10 @@ function drawCursors(now) {
       el.style.color = color;
       el.style.opacity = opacity;
     };
-    for (const [uid, { el, label, msg, drag, dragEl, selection, selectionEls, text, textEls }] of remoteCursors) {
+    for (const [uid, entry] of remoteCursors) {
+      const { el, msg, drag, dragEl, selection, selectionEls, text, textEls } = entry;
       const user = presence.users.find((u) => u.uid === uid);
-      if (drag && !text) {
+      if (hwp && drag && !text) {
         const { msg: d, fade } = drag;
         const startPage = d.dp === undefined ? d.page : d.dp;
         drawRect(dragEl, project(d.space, startPage, ...d.d), project(d.space, d.page, d.x, d.y),
@@ -549,26 +509,17 @@ function drawCursors(now) {
             user.color, space === 'viewport' ? .72 : 1);
         });
       }
-      if (text) {
-        const ts = text.selection;
-        let boxes = [];
-        if (ts.space === 'cell' && file.type === 'cell') {
-          boxes = cellSelectionBoxes(win, rect, ts);
-        } else if (ts.space === 'hwp' && hwp) {
-          boxes = ts.rects.map(([page, x, y, w, h]) =>
-            [project('hwp', page, x, y), project('hwp', page, x + w, y + h)]);
-        } else if (ts.space === 'viewport' && viewer) {
-          const point = (x, y) => [textClip[0] + x * viewer.width, textClip[1] + y * viewer.height];
-          boxes = ts.rects.map(([, x, y, w, h]) => [point(x, y), point(x + w, y + h)]);
-        }
-        while (textEls.length > boxes.length) textEls.pop().remove();
-        boxes.forEach(([a, b], i) => {
+      if (hwp && text) {
+        const { rects } = text.selection;
+        while (textEls.length > rects.length) textEls.pop().remove();
+        rects.forEach(([page, x, y, w, h], i) => {
           textEls[i] ||= cursorRect('remote-selection', uid);
-          drawRect(textEls[i], a, b, user.color, ts.space === 'hwp' ? 1 : .72, 0);
+          drawRect(textEls[i], project('hwp', page, x, y), project('hwp', page, x + w, y + h), user.color, 1, 0);
         });
       }
       if (msg.x === null) {
         el.hidden = true;
+        updateSelectionLabel(uid, entry, user);
         continue;
       }
       const approximate = msg.space === 'viewport' || msg.space === 'word';
@@ -584,6 +535,7 @@ function drawCursors(now) {
         }
       }
       el.hidden = !width || !height || !Number.isFinite(x) || !Number.isFinite(y);
+      updateSelectionLabel(uid, entry, user);
       if (el.hidden) continue;
       const side = hwp && (x < 0 || x >= width);
       const atTop = y < 0 || (side && y < height / 2);
@@ -593,10 +545,10 @@ function drawCursors(now) {
       el.classList.toggle('edge-bottom', atBottom);
       x = Math.max(0, Math.min(width - (atTop || atBottom ? 17 : 1), x)) + left;
       y = (atTop ? 0 : atBottom ? Math.max(0, height - 19) : y) + top;
-      el.classList.toggle('left-label', x > layer.width - 115);
+      const labelWidth = el.classList.contains('has-selection') ? Math.min(275, layer.width / 2) : 115;
+      el.classList.toggle('left-label', x > layer.width - labelWidth);
       el.style.transform = `translate(${x}px, ${y}px)`;
       el.style.setProperty('--cursor-color', user.color);
-      if (label.textContent !== user.name) label.textContent = user.name;
     }
   } catch { /* 프레임 이동 중이면 다음 화면에서 다시 그린다 */ }
 }

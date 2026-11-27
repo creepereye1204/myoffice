@@ -320,9 +320,11 @@ def test_ws_cursor_broadcast_validation_and_rate(http, U):
             hwp_ts = {"space": "hwp", "rects": [[i // 20, 120.5, 40 + i, 42.75, 12] for i in range(40)]}
             viewport_ts = {"space": "viewport", "rects": [[0, 0.2, 0.5, 0.3, 0.04]]}
             cell_ts = {"space": "cell", "sheet": 2, "ranges": [[0, 0, 1_048_575, 16_383]] * 20}
+            text_ts = {"space": "text", "text": "Collaborative text…", "range": None}
+            range_ts = {"space": "text", "text": "", "range": "'매출 ''26'!B2:D5"}
             clear = {"type": "cursor", "ts": None}
-            for update in (drag, selection, {**move, "ts": hwp_ts}, {"type": "cursor", "ts": viewport_ts},
-                           {"type": "cursor", "ts": cell_ts}, clear):
+            for update in (drag, selection, {**move, "ts": hwp_ts}, {"type": "cursor", "ts": text_ts},
+                           {"type": "cursor", "ts": range_ts}, clear):
                 await asyncio.sleep(0.06)
                 if update.get("ts"):
                     await a.send({**update, "uid": "다른 사용자", "ts": {**update["ts"], "extra": True}})
@@ -342,18 +344,17 @@ def test_ws_cursor_broadcast_validation_and_rate(http, U):
                             {**move, "sel": [[0, 0, 10**20, 1]]},
                             {"type": "cursor", "x": None, "extra": "x" * 300}):
                 await a.send(invalid)
-            for invalid in ([], {}, {**viewport_ts, "rects": [[1, 0, 0, 1, 1]]},
-                            {**viewport_ts, "rects": [[0, 0.9, 0, 0.2, 1]]},
-                            {**viewport_ts, "rects": [[0, -0.01, 0, 0.2, 1]]},
+            for invalid in ([], {}, viewport_ts, cell_ts,
                             {**hwp_ts, "rects": hwp_ts["rects"] + [[0, 0, 0, 1, 1]]},
                             {**hwp_ts, "rects": [[True, 0, 0, 1, 1]]},
                             {**hwp_ts, "rects": [[0, 0, 0, 1, 0]]},
                             {**hwp_ts, "rects": [[100_000, 0, 0, 1, 1]]},
                             {**hwp_ts, "rects": [[0, 0, "0", 1, 1]]},
-                            {**cell_ts, "ranges": cell_ts["ranges"] + [[0, 0, 0, 0]]},
-                            {**cell_ts, "ranges": [[1, 0, 0, 1]]},
-                            {**cell_ts, "ranges": [[0, 0, 1, 16384]]},
-                            {**cell_ts, "sheet": False}):
+                            {**text_ts, "text": "가" * 61}, {**text_ts, "text": 5},
+                            {"space": "text", "text": "선택"},
+                            {**range_ts, "range": "B2:D0"}, {**range_ts, "range": "B2:3"},
+                            {**range_ts, "range": f"{'가' * 36}!B2:D5"},
+                            {**range_ts, "range": "[Book.xlsx]Sheet!A1:B2"}):
                 await a.send({"type": "cursor", "ts": invalid})
             await a.send({"type": "ping"})
             await a.wait(lambda m: m["type"] == "pong")

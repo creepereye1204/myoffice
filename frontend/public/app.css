@@ -172,6 +172,7 @@ dialog input { width: 100%; padding: 9px 12px; border: 1px solid var(--line); bo
 .remote-cursor { position: absolute; top: 0; left: 0; z-index: 1; color: var(--cursor-color); transition: transform 80ms linear; }
 .remote-cursor svg { display: block; width: 16px; height: 19px; }
 .remote-cursor span { position: absolute; top: 14px; left: 11px; padding: 2px 6px; border-radius: 4px; background: var(--cursor-color); color: #fff; font-size: 11px; font-weight: 700; white-space: nowrap; max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+.remote-cursor.has-selection span { max-width: min(260px, calc(50vw - 16px)); }
 .remote-cursor.approx { opacity: .72; }
 .remote-cursor.left-label span { left: auto; right: 2px; }
 .remote-cursor.edge-top svg { transform: rotate(32deg) scale(.8); }
@@ -206,6 +207,7 @@ dialog input { width: 100%; padding: 9px 12px; border: 1px solid var(--line); bo
 .avatar:first-child { margin-left: 0; }
 .avatar.lock::after { content: "✎"; position: absolute; right: -4px; bottom: -4px; width: 15px; height: 15px; border-radius: 50%; background: var(--surface); color: var(--text); font-size: 10px; display: grid; place-items: center; box-shadow: 0 0 0 1px var(--line); }
 .avatar.me { cursor: pointer; }
+.avatar-selection { position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; padding: 2px 6px; border-radius: 4px; background: var(--c); color: #fff; font-size: 11px; width: max-content; max-width: min(260px, 75vw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .banner { display: flex; align-items: center; gap: 12px; padding: 8px 16px; font-size: 14px; background: color-mix(in srgb, #f59e0b 16%, var(--surface)); border-bottom: 1px solid var(--line); }
 .banner[hidden] { display: none; }
 .banner .grow { flex: 1; }

@@ -9,11 +9,21 @@ uvicorn 단일 프로세스 기준 메모리 상태(재시작 시 비워지고 �
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 
 from fastapi import WebSocket
 
 LOCK_GRACE = 10.0
+
+# 시트 이름은 일반 이름 또는 작은따옴표로 감싼 이름을 허용한다.
+_A1_CELL = r"\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}"
+_SELECTION_RANGE = re.compile(
+    rf"(?:(?:[\w.]+|'(?:[^'\x00-\x1f\x7f:\[\]\x5c/?*]|'')+')!)?"
+    rf"(?:{_A1_CELL}(?::{_A1_CELL})?|\$?[A-Z]{{1,3}}:\$?[A-Z]{{1,3}}"
+    r"|\$?[1-9][0-9]{0,6}:\$?[1-9][0-9]{0,6})",
+    re.IGNORECASE,
+)
 
 COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#db2777", "#65a30d"]
 
@@ -228,21 +238,17 @@ class Rooms:
             return type(value) is int and 0 <= value < limit
 
         space = ts.get("space")
-        if space == "cell":
-            sheet, ranges = ts.get("sheet"), ts.get("ranges")
-            if not index(sheet, 100_000) or not isinstance(ranges, list) or not 0 < len(ranges) <= 20:
+        if space == "text":
+            text, cell_range = ts.get("text"), ts.get("range")
+            if not isinstance(text, str) or len(text) > 60 or "range" not in ts:
                 raise ValueError
-            for row in ranges:
-                if not isinstance(row, list) or len(row) != 4:
-                    raise ValueError
-                r1, c1, r2, c2 = row
-                if not (index(r1, 1_048_576) and index(r2, 1_048_576)
-                        and index(c1, 16_384) and index(c2, 16_384) and r1 <= r2 and c1 <= c2):
-                    raise ValueError
-            return {"space": space, "sheet": sheet, "ranges": ranges}
+            if cell_range is not None and (not isinstance(cell_range, str) or len(cell_range) > 40
+                                           or not _SELECTION_RANGE.fullmatch(cell_range)):
+                raise ValueError
+            return {"space": space, "text": text, "range": cell_range}
 
         rects = ts.get("rects")
-        if space not in ("word", "hwp", "slide", "viewport") or not isinstance(rects, list) or not 0 < len(rects) <= 40:
+        if space != "hwp" or not isinstance(rects, list) or not 0 < len(rects) <= 40:
             raise ValueError
         for rect in rects:
             if not isinstance(rect, list) or len(rect) != 5:
@@ -251,8 +257,6 @@ class Rooms:
             if not (index(page, 100_000)
                     and all(type(v) in (int, float) and -1_000_000 <= v <= 10_000_000 for v in (x, y))
                     and all(type(v) in (int, float) and 0 < v <= 10_000_000 for v in (w, h))):
-                raise ValueError
-            if space == "viewport" and (page != 0 or x < 0 or y < 0 or x + w > 1 or y + h > 1):
                 raise ValueError
         return {"space": space, "rects": rects}
 
