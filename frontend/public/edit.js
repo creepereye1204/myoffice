@@ -138,20 +138,11 @@ function hwpCursorLayout(scroll) {
   return { rect, pages, zoom, left };
 }
 
-function wordCursorDocument(win) {
-  // 워드: WordControl 의 페이지 변환기가 현재 스크롤, 배율, 눈금자 위치를 반영한다.
-  // 셀은 시트·틀 고정, 슬라이드는 현재 장표에 따라 기준이 달라 viewport 비율을 쓴다.
-  if (file.type !== 'word') return null;
-  const drawing = officeSdk(win)?.WordControl?.m_oDrawingDocument;
-  return typeof drawing?.ConvertCoordsFromCursor2 === 'function' &&
-    typeof drawing.ConvertCoordsToCursor3 === 'function' ? drawing : null;
-}
-
 function officeSdk(win) {
   return win.Asc?.editor || win.editor;
 }
 
-function cursorPosition(win, surface, x, y) {
+function cursorPosition(surface, x, y) {
   const rect = surface.getBoundingClientRect();
   const width = file.type === 'hwp' ? surface.clientWidth : rect.width;
   const height = file.type === 'hwp' ? surface.clientHeight : rect.height;
@@ -165,15 +156,8 @@ function cursorPosition(win, surface, x, y) {
     if (!(layout.zoom > 0)) return null;
     return { space: 'hwp', x: (x - layout.left) / layout.zoom, y: (y - rect.top + surface.scrollTop) / layout.zoom };
   }
-  const vx = (x - rect.left) / width, vy = (y - rect.top) / height;
-  try {
-    const point = wordCursorDocument(win)?.ConvertCoordsFromCursor2(x, y);
-    if (Number.isInteger(point?.DrawPage) && point.DrawPage >= 0 && Number.isFinite(point.X) && Number.isFinite(point.Y)) {
-      return { space: 'word', page: point.DrawPage, x: point.X, y: point.Y, vx, vy };
-    }
-  } catch { /* SDK 가 문서 화면을 아직 준비하는 중일 수 있다 */ }
-  // 워드도 SDK 변환을 사용할 수 없는 화면에서는 흐리게 표시한다.
-  return { space: 'viewport', x: vx, y: vy };
+  // ONLYOFFICE 공개 API에는 포인터를 페이지 좌표로 바꾸는 함수가 없다.
+  return { space: 'viewport', x: (x - rect.left) / width, y: (y - rect.top) / height };
 }
 
 let cursorSurface, dragStart;
@@ -185,7 +169,7 @@ function eventCursorPosition(win, e) {
   if (document.hidden || !e.isPrimary || !cursorSurface?.surface.isConnected) return null;
   const { win: target, surface } = cursorSurface;
   const from = cursorOrigin(win), to = cursorOrigin(target);
-  return cursorPosition(target, surface, e.clientX + from.x - to.x, e.clientY + from.y - to.y);
+  return cursorPosition(surface, e.clientX + from.x - to.x, e.clientY + from.y - to.y);
 }
 
 function hwpSelectionRects(surface) {
@@ -215,144 +199,100 @@ function hwpSelectionRects(surface) {
   return rects;
 }
 
-function captureOfficeSelection(drawing, draw) {
+function wordSelectionRects(sdk, surface) {
+  const corners = sdk?.asc_GetSelectionBounds?.();
+  const viewer = surface.querySelector('#id_viewer')?.getBoundingClientRect();
+  if (!viewer?.width || !viewer.height || corners?.length !== 4 ||
+      !corners.every((p) => p?.length === 2 && p.every(Number.isFinite))) return [];
+  const [[x1, y1], [, bottom1], [x2, y2], [, bottom2]] = corners;
+  if (bottom1 <= y1 || bottom2 <= y2 || !sdk.asc_GetSelectedText?.(true)) return [];
+
+  // 공개 API는 편집기 화면의 시작·끝 줄 좌표를 준다. 중간 줄은 본문 폭을 근사한다.
+  const root = surface.getBoundingClientRect();
+  const left = viewer.left - root.left, top = viewer.top - root.top;
+  const right = left + viewer.width, bottom = top + viewer.height;
   const rects = [];
-  const { AddPageSelection, TextMatrix, IsTextSelectionOutline } = drawing;
-  // SDK의 그리기 경로에서 mm 좌표만 읽고 실제 오버레이에는 그리지 않는다.
-  drawing.AddPageSelection = function (page, x, y, w, h) {
-    if (rects.length >= 40 || !(w > 0 && h > 0)) return;
-    const matrix = this.TextMatrix;
-    if (!matrix) {
-      rects.push([page, x, y, w, h]);
-      return;
-    }
-    const corners = [[x, y], [x + w, y], [x, y + h], [x + w, y + h]];
-    const xs = corners.map(([cx, cy]) => matrix.TransformPointX(cx, cy));
-    const ys = corners.map(([cx, cy]) => matrix.TransformPointY(cx, cy));
-    const left = Math.min(...xs), top = Math.min(...ys);
-    rects.push([page, left, top, Math.max(...xs) - left, Math.max(...ys) - top]);
+  const add = (x, y, xEnd, yEnd) => {
+    x = Math.max(left, x);
+    y = Math.max(top, y);
+    xEnd = Math.min(right, xEnd);
+    yEnd = Math.min(bottom, yEnd);
+    if (xEnd > x && yEnd > y) rects.push([0, (x - left) / viewer.width, (y - top) / viewer.height,
+      (xEnd - x) / viewer.width, (yEnd - y) / viewer.height]);
   };
-  try {
-    draw(rects);
-  } finally {
-    Object.assign(drawing, { AddPageSelection, TextMatrix, IsTextSelectionOutline });
+  if (Math.abs(y2 - y1) <= 1) {
+    add(Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(bottom1, bottom2));
+  } else if (y2 > y1) {
+    const textLeft = Math.min(x1, x2, left + viewer.width * .12);
+    const textRight = Math.max(x1, x2, right - viewer.width * .12);
+    add(x1, y1, textRight, Math.min(bottom1, y2));
+    add(textLeft, bottom1, textRight, y2);
+    add(textLeft, y2, x2, bottom2);
   }
   return rects;
 }
 
-function wordSelectionRects(control) {
-  const logic = control?.m_oLogicDocument, drawing = control?.m_oDrawingDocument;
-  if (!logic || !(logic.IsSelectionUse?.() ?? drawing?.m_bIsSelection) || logic.IsSelectionEmpty?.()) return [];
-  const { Start: start, End: end } = logic.GetSelectionBounds?.() || {};
-  const hasBounds = Number.isInteger(start?.Page) && Number.isInteger(end?.Page);
-  const first = hasBounds ? start.Page : drawing?.m_lDrawingFirst;
-  const last = hasBounds ? end.Page : drawing?.m_lDrawingEnd;
-  if (typeof drawing?.AddPageSelection === 'function' && typeof logic.DrawSelectionOnPage === 'function') {
-    const rects = captureOfficeSelection(drawing, (result) => {
-      for (let page = Math.max(0, first); page <= last && page < drawing.m_lPagesCount &&
-           page < first + 40 && result.length < 40; page++) {
-        logic.DrawSelectionOnPage(page);
-      }
-    });
-    if (rects.length) return rects;
-  }
-  if (!hasBounds || first < 0 || last < first) return [];
-  if (first === last && Math.abs(start.Y - end.Y) < .01) {
-    return [[first, start.X, start.Y, end.X + end.W - start.X, start.H]];
-  }
-  const rects = [];
-  // 줄별 좌표가 없는 SDK에서는 문서 여백과 양 끝 줄의 높이로 근사한다.
-  for (let page = first; page <= last && page < first + 40 && rects.length < 40; page++) {
-    const fields = logic.Get_PageFields?.(page);
-    if (!fields) break;
-    const height = page === last ? end.H : start.H;
-    const bottom = page === last ? end.Y : fields.YLimit;
-    if (!(height > 0)) break;
-    let y = page === first ? start.Y : fields.Y;
-    for (; y < bottom - .01 && rects.length < (page === last ? 39 : 40); y += height) {
-      const x = page === first && y === start.Y ? start.X : fields.X;
-      rects.push([page, x, y, fields.XLimit - x, Math.min(height, bottom - y)]);
-    }
-    if (page === last) rects.push([page, fields.X, end.Y, end.X + end.W - fields.X, end.H]);
-  }
-  return rects;
-}
-
-function slideSelectionRects(control) {
-  const logic = control?.m_oLogicDocument, drawing = control?.m_oDrawingDocument;
-  if (!drawing?.m_bIsSelection || typeof drawing.AddPageSelection !== 'function' ||
-      logic?.IsFocusOnNotes?.() || logic?.IsFocusOnOutline?.()) return [];
-  const slide = logic?.GetCurrentSlide?.();
-  if (typeof slide?.drawSelect !== 'function') return [];
-  // 첫 번째 그리기 단계는 도형 안의 글자 선택을 그린다.
-  return captureOfficeSelection(drawing, () => slide.drawSelect(1))
-    .filter(([page]) => page === drawing.SlideCurrent);
-}
-
-function activeWorksheet(win) {
-  const sdk = officeSdk(win), sheet = sdk?.asc_getActiveWorksheetIndex?.();
-  if (!Number.isInteger(sheet) || sheet < 0) return {};
-  return { sheet, worksheet: sdk.wb?.getWorksheet?.(sheet, true) };
+function cellRange(address) {
+  // 공개 범위 이름은 A1 형식이며 행·열 전체 선택에서는 한 축을 생략한다.
+  const match = typeof address === 'string' && address.split('!').at(-1)
+    .match(/^\$?([A-Z]{1,3})?\$?(\d{1,7})?(?::\$?([A-Z]{1,3})?\$?(\d{1,7})?)?$/i);
+  if (!match) return null;
+  const [, c1, r1, c2 = c1, r2 = r1] = match;
+  if (!c1 && !r1) return null;
+  const column = (name) => [...name.toUpperCase()].reduce((n, char) => n * 26 + char.charCodeAt(0) - 64, 0) - 1;
+  const range = [r1 ? Number(r1) - 1 : 0, c1 ? column(c1) : 0,
+    r2 ? Number(r2) - 1 : 1_048_575, c2 ? column(c2) : 16_383];
+  const [startRow, startCol, endRow, endCol] = range;
+  return startRow >= 0 && startCol >= 0 && startRow <= endRow && startCol <= endCol &&
+    endRow < 1_048_576 && endCol < 16_384 ? range : null;
 }
 
 function cellSelectionBoxes(win, rect, selection) {
-  const { sheet, worksheet } = activeWorksheet(win);
+  const sdk = officeSdk(win);
+  if (sdk?.asc_getActiveWorksheetIndex?.() !== selection.sheet) return [];
   const canvas = win.document.querySelector('#ws-canvas');
-  const visible = worksheet?.getVisibleRange?.();
-  if (sheet !== selection.sheet || !canvas?.width || !canvas.height || !visible ||
-      typeof worksheet.getCellMetrics !== 'function') return [];
+  const anchor = cellRange(sdk.asc_getActiveRangeStr?.(undefined, true, true));
+  const coord = sdk.asc_getActiveCellCoord?.();
+  if (!canvas || !anchor || !coord) return [];
+  const x = coord.asc_getX?.(), y = coord.asc_getY?.();
+  const w = coord.asc_getWidth?.(), h = coord.asc_getHeight?.();
+  if (![x, y, w, h].every(Number.isFinite) || !w || h <= 0) return [];
   const box = canvas.getBoundingClientRect();
-  const sx = box.width / canvas.width, sy = box.height / canvas.height;
-  const frozen = worksheet.getFrozenCell?.();
-  const fc = frozen?.getCol0() || 0, fr = frozen?.getRow0() || 0;
-  const c0 = worksheet._getFrozenScrollCol0?.() ?? 0, r0 = worksheet._getFrozenScrollRow0?.() ?? 0;
-  const cols = [[visible.c1, visible.c2]], rows = [[visible.r1, visible.r2]];
-  if (fc > c0) cols.unshift([c0, fc - 1]);
-  if (fr > r0) rows.unshift([r0, fr - 1]);
-  const rtl = worksheet.getRightToLeft?.();
-  const px = (x) => box.left - rect.left + (rtl ? canvas.width - x : x) * sx;
-  const py = (y) => box.top - rect.top + y * sy;
-  const result = [];
-  // 틀 고정 경계를 넘는 범위는 현재 보이는 각 구역에서 따로 그린다.
+  // 임의 셀의 좌표는 공개되지 않아 수신 측 활성 셀의 위치와 크기를 기준으로 근사한다.
+  const [row, col] = anchor;
+  const boxes = [];
   for (const [r1, c1, r2, c2] of selection.ranges) {
-    for (const [left, right] of cols) {
-      for (const [top, bottom] of rows) {
-        const c = Math.max(left, c1), r = Math.max(top, r1);
-        const endCol = Math.min(right, c2), endRow = Math.min(bottom, r2);
-        if (c > endCol || r > endRow) continue;
-        const a = worksheet.getCellMetrics(c, r), b = worksheet.getCellMetrics(endCol, endRow);
-        if (!a || !b) continue;
-        const minX = left >= fc && fc > c0 ? worksheet._getColLeft(fc) - worksheet._getColLeft(c0) + worksheet.cellsLeft : worksheet.cellsLeft;
-        const minY = top >= fr && fr > r0 ? worksheet._getRowTop(fr) - worksheet._getRowTop(r0) + worksheet.cellsTop : worksheet.cellsTop;
-        const x = Math.max(a.left, minX), y = Math.max(a.top, minY);
-        const x2 = Math.min(canvas.width, b.left + b.width), y2 = Math.min(canvas.height, b.top + b.height);
-        if (x < x2 && y < y2) result.push([[px(x), py(y)], [px(x2), py(y2)]]);
-      }
-    }
+    const a = x + (c1 - col) * w, b = x + (c2 + 1 - col) * w;
+    const left = Math.max(0, Math.min(a, b)), right = Math.min(box.width, Math.max(a, b));
+    const top = Math.max(0, y + (r1 - row) * h), bottom = Math.min(box.height, y + (r2 + 1 - row) * h);
+    if (left < right && top < bottom) boxes.push([
+      [box.left - rect.left + left, box.top - rect.top + top],
+      [box.left - rect.left + right, box.top - rect.top + bottom],
+    ]);
   }
-  return result;
+  return boxes;
 }
 
 function readTextSelection(win, surface) {
-  const space = file.type;
-  if (space === 'cell') {
-    const { sheet, worksheet } = activeWorksheet(win);
-    const selected = worksheet?._getSelection?.()?.ranges;
-    if (!selected?.length) return null;
-    const ranges = selected.slice(0, 20).map(({ r1, c1, r2, c2 }) => [r1, c1, r2, c2]);
-    return { space, sheet, ranges };
+  const sdk = file.type !== 'hwp' && officeSdk(win);
+  if (file.type === 'cell') {
+    const sheet = sdk?.asc_getActiveWorksheetIndex?.();
+    const range = cellRange(sdk?.asc_getActiveRangeStr?.(undefined, false, true));
+    return Number.isInteger(sheet) && sheet >= 0 && range ? { space: 'cell', sheet, ranges: [range] } : null;
   }
-  const control = space !== 'hwp' && officeSdk(win)?.WordControl;
-  let selection = [];
-  if (space === 'hwp') selection = hwpSelectionRects(surface);
-  else if (space === 'word') selection = wordSelectionRects(control);
-  else if (space === 'slide') selection = slideSelectionRects(control);
-  const rects = selection
+  if (file.type === 'word') {
+    const rects = wordSelectionRects(sdk, surface)
+      .map((r) => r.map((v) => Math.floor(v * 10000) / 10000))
+      .filter(([, , , w, h]) => w > 0 && h > 0);
+    return rects.length ? { space: 'viewport', rects } : null;
+  }
+  if (file.type !== 'hwp') return null;
+  const rects = hwpSelectionRects(surface)
     .filter(([page, x, y, w, h]) => Number.isInteger(page) && page >= 0 &&
       [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0)
     .map((r) => r.map((v) => Math.round(v * 1000) / 1000))
     .filter(([, , , w, h]) => w > 0 && h > 0);
-  return rects.length ? { space, rects } : null;
+  return rects.length ? { space: 'hwp', rects } : null;
 }
 
 function updateTextSelection(force = false) {
@@ -385,7 +325,7 @@ function hookCursorWin(win) {
   const surface = cursorEditorSurface(win);
   if (surface) {
     cursorSurface = { win, surface };
-    const sdk = file.type !== 'hwp' && officeSdk(win);
+    const sdk = (file.type === 'word' || file.type === 'cell') && officeSdk(win);
     if (sdk?.asc_registerCallback && !selectionSdks.has(sdk)) {
       selectionSdks.add(sdk);
       const sync = () => queueMicrotask(() => {
@@ -393,8 +333,8 @@ function hookCursorWin(win) {
       });
       if (file.type === 'cell') sdk.asc_registerCallback('asc_onSelectionChanged', sync);
       if (file.type === 'word') {
-        sdk.asc_registerCallback('asc_onSelectionEnd', sync);
-        sdk.asc_registerCallback('asc_onSelectionCancel', sync);
+        sdk.asc_registerCallback('asc_onCurrentPage', sync);
+        sdk.asc_registerCallback('asc_onZoomChange', sync);
       }
     }
   }
@@ -565,9 +505,7 @@ function drawCursors(now) {
     const rect = surface.getBoundingClientRect(), origin = cursorOrigin(win);
     const layer = $('#remote-cursors').getBoundingClientRect();
     const hwp = file.type === 'hwp' ? hwpCursorLayout(surface) : null;
-    const word = wordCursorDocument(win);
-    const slide = file.type === 'slide' ? officeSdk(win)?.WordControl?.m_oDrawingDocument : null;
-    const viewer = (word || slide) && win.document.querySelector('#id_viewer')?.getBoundingClientRect();
+    const viewer = file.type === 'word' ? surface.querySelector('#id_viewer')?.getBoundingClientRect() : null;
     const width = hwp ? surface.clientWidth : rect.width;
     const height = hwp ? surface.clientHeight : rect.height;
     const left = origin.x + rect.left - layer.left, top = origin.y + rect.top - layer.top;
@@ -579,14 +517,6 @@ function drawCursors(now) {
         if (pageIndex == null) return [hwp.left - rect.left + x * hwp.zoom, y * hwp.zoom - surface.scrollTop];
         const page = hwp.pages.find((p) => p.page === pageIndex && p.zoom > 0);
         if (page) return [page.box.left - rect.left + x * page.zoom, page.box.top - rect.top + y * page.zoom];
-      }
-      if (word && space === 'word') {
-        const point = word.ConvertCoordsToCursor3(x, y, pageIndex, true);
-        if (point && !point.Error) return [point.X - rect.left, point.Y - rect.top];
-      }
-      if (slide?.SlideCurrent === pageIndex && space === 'slide') {
-        const point = slide.ConvertCoordsToCursor3?.(x, y, true);
-        if (point && !point.Error) return [point.X - rect.left, point.Y - rect.top];
       }
       return [];
     };
@@ -622,29 +552,29 @@ function drawCursors(now) {
       if (text) {
         const ts = text.selection;
         let boxes = [];
-        if (ts.space === file.type) {
-          boxes = ts.space === 'cell' ? cellSelectionBoxes(win, rect, ts) : ts.rects.map(([page, x, y, w, h]) => {
-            if (word && (page < word.m_lDrawingFirst || page > word.m_lDrawingEnd)) return [[], []];
-            return [project(ts.space, page, x, y), project(ts.space, page, x + w, y + h)];
-          });
+        if (ts.space === 'cell' && file.type === 'cell') {
+          boxes = cellSelectionBoxes(win, rect, ts);
+        } else if (ts.space === 'hwp' && hwp) {
+          boxes = ts.rects.map(([page, x, y, w, h]) =>
+            [project('hwp', page, x, y), project('hwp', page, x + w, y + h)]);
+        } else if (ts.space === 'viewport' && viewer) {
+          const point = (x, y) => [textClip[0] + x * viewer.width, textClip[1] + y * viewer.height];
+          boxes = ts.rects.map(([, x, y, w, h]) => [point(x, y), point(x + w, y + h)]);
         }
         while (textEls.length > boxes.length) textEls.pop().remove();
         boxes.forEach(([a, b], i) => {
           textEls[i] ||= cursorRect('remote-selection', uid);
-          drawRect(textEls[i], a, b, user.color, 1, 0);
+          drawRect(textEls[i], a, b, user.color, ts.space === 'hwp' ? 1 : .72, 0);
         });
       }
       if (msg.x === null) {
         el.hidden = true;
         continue;
       }
-      const approximate = msg.space === 'viewport' || (msg.space === 'word' && !word);
+      const approximate = msg.space === 'viewport' || msg.space === 'word';
       let x, y;
       if (approximate) {
         [x, y] = project('viewport', null, msg.vx ?? msg.x, msg.vy ?? msg.y);
-      } else if (word && msg.space === 'word' && (msg.page < word.m_lDrawingFirst || msg.page > word.m_lDrawingEnd)) {
-        x = width / 2;
-        y = msg.page < word.m_lDrawingFirst ? -1 : height + 1;
       } else {
         [x, y] = project(msg.space, msg.page, msg.x, msg.y);
         if (x === undefined && hwp && msg.space === 'hwp' && msg.page !== undefined) {

@@ -91,20 +91,19 @@ for (const kind of ['hwp', 'docx']) {
     } else {
       const local = await surface.evaluate((el) => {
         const win = el.ownerDocument.defaultView;
-        const control = (win.Asc?.editor || win.editor).WordControl;
-        const { Start: start, End: last } = control.m_oLogicDocument.GetSelectionBounds();
-        const { X: x, Y: y } = control.m_oDrawingDocument.ConvertCoordsToCursor3(start.X, start.Y, start.Page, true);
-        const end = control.m_oDrawingDocument.ConvertCoordsToCursor3(last.X + last.W, start.Y + start.H, start.Page, true);
-        return { x, y, width: end.X - x, height: end.Y - y };
+        const [[x, y], [, bottom], [right]] = (win.Asc?.editor || win.editor).asc_GetSelectionBounds();
+        return { x, y, width: right - x, height: bottom - y };
       });
-      const iframe = await owner.page.locator('iframe[name="frameEditor"]').boundingBox();
-      line = { ...local, x: local.x + iframe.x, y: local.y + iframe.y };
+      const root = await surface.boundingBox();
+      line = { ...local, x: local.x + root.x, y: local.y + root.y };
     }
     expect(line.width).toBeGreaterThan(20);
     const x = line.x + 2, y = line.y + line.height / 2;
     await expect(remote.first()).toBeVisible();
     await owner.page.mouse.click(x, y);
     await expect(remote).toHaveCount(0);
+    // 바로 누르면 앞의 클릭과 합쳐져 더블클릭(단어 선택 모드)이 되어 드래그 선택이 안 된다
+    await owner.page.waitForTimeout(700);
     await owner.page.mouse.move(x, y);
     await owner.page.mouse.down();
     await owner.page.mouse.move(x + line.width * .75, y, { steps: 12 });

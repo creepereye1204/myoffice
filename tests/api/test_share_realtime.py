@@ -318,9 +318,10 @@ def test_ws_cursor_broadcast_validation_and_rate(http, U):
             drag = {**move, "page": 1, "d": [30.25, 42], "dp": 0}
             selection = {**move, "page": 1, "sel": [[120.5, 300 + i * 12, 42.75, 12] for i in range(20)]}
             hwp_ts = {"space": "hwp", "rects": [[i // 20, 120.5, 40 + i, 42.75, 12] for i in range(40)]}
+            viewport_ts = {"space": "viewport", "rects": [[0, 0.2, 0.5, 0.3, 0.04]]}
             cell_ts = {"space": "cell", "sheet": 2, "ranges": [[0, 0, 1_048_575, 16_383]] * 20}
             clear = {"type": "cursor", "ts": None}
-            for update in (drag, selection, {**move, "ts": hwp_ts},
+            for update in (drag, selection, {**move, "ts": hwp_ts}, {"type": "cursor", "ts": viewport_ts},
                            {"type": "cursor", "ts": cell_ts}, clear):
                 await asyncio.sleep(0.06)
                 if update.get("ts"):
@@ -341,7 +342,9 @@ def test_ws_cursor_broadcast_validation_and_rate(http, U):
                             {**move, "sel": [[0, 0, 10**20, 1]]},
                             {"type": "cursor", "x": None, "extra": "x" * 300}):
                 await a.send(invalid)
-            for invalid in ([], {}, {"space": "viewport", "rects": [[0, 0, 0, 1, 1]]},
+            for invalid in ([], {}, {**viewport_ts, "rects": [[1, 0, 0, 1, 1]]},
+                            {**viewport_ts, "rects": [[0, 0.9, 0, 0.2, 1]]},
+                            {**viewport_ts, "rects": [[0, -0.01, 0, 0.2, 1]]},
                             {**hwp_ts, "rects": hwp_ts["rects"] + [[0, 0, 0, 1, 1]]},
                             {**hwp_ts, "rects": [[True, 0, 0, 1, 1]]},
                             {**hwp_ts, "rects": [[0, 0, 0, 1, 0]]},

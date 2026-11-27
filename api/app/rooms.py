@@ -242,7 +242,7 @@ class Rooms:
             return {"space": space, "sheet": sheet, "ranges": ranges}
 
         rects = ts.get("rects")
-        if space not in ("word", "hwp", "slide") or not isinstance(rects, list) or not 0 < len(rects) <= 40:
+        if space not in ("word", "hwp", "slide", "viewport") or not isinstance(rects, list) or not 0 < len(rects) <= 40:
             raise ValueError
         for rect in rects:
             if not isinstance(rect, list) or len(rect) != 5:
@@ -251,6 +251,8 @@ class Rooms:
             if not (index(page, 100_000)
                     and all(type(v) in (int, float) and -1_000_000 <= v <= 10_000_000 for v in (x, y))
                     and all(type(v) in (int, float) and 0 < v <= 10_000_000 for v in (w, h))):
+                raise ValueError
+            if space == "viewport" and (page != 0 or x < 0 or y < 0 or x + w > 1 or y + h > 1):
                 raise ValueError
         return {"space": space, "rects": rects}
 
