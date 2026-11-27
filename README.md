@@ -43,6 +43,13 @@ docker compose up -d --build
 - 컨테이너는 호스트 포트를 열지 않는다. 앞단 리버스 프록시가 `rhwp_default` 네트워크로 `rhwp-web:80`, `rhwp-api:8000`에 연결.
 - 도메인은 코드에 넣지 않는다: 프론트는 `www.X` → `api.X`, ONLYOFFICE는 같은 출처 `/office/`. CORS만 compose의 `CORS_ORIGINS`로 설정.
 
+## 모니터링
+- [Grafana](https://www.myoffice.p-e.kr/grafana/)에서 `admin`과 `.env`의 `GRAFANA_ADMIN_PASSWORD`로 처음 로그인한다. 실행 전에 비밀번호를 설정한다.
+- 브라우저 패널은 리소스 종류별 DNS·TCP·TLS·응답 대기(TTFB)·다운로드 시간의 p50/p95, 전체 시간, 전송량과 캐시 적중률을 보여 준다. `page`에서 홈과 편집 화면을 선택할 수 있다.
+- API 패널은 라우트별 응답 헤더까지 걸린 p95 시간, 초당 요청 수, 수신 및 응답 바이트를 보여 준다. ONLYOFFICE 패널에는 변환과 강제 저장 시간이 표시된다.
+- 컨테이너 패널은 웹·API·ONLYOFFICE의 네트워크 송수신량과 컨테이너별 CPU·메모리 사용량을 보여 준다.
+- Prometheus는 30일간 메트릭을 보관한다. API 메트릭 포트 `9000`은 도커 네트워크 내부에서만 사용한다.
+
 ## 테스트
 ```bash
 WEB_URL=https://www.<도메인> API_URL=https://api.<도메인> tests/run-api-tests.sh   # API (pytest, 도커 안에서)

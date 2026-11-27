@@ -16,16 +16,19 @@ import secrets
 import shutil
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote, urlsplit
 
 import httpx
 import jwt
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import Counter, Histogram, start_http_server
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.datastructures import MutableHeaders
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 TEMPLATE_DIR = Path(os.environ.get("TEMPLATE_DIR", "/app/templates"))
@@ -40,6 +43,69 @@ CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "https://www.m
 MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_MB", "50")) * 1024 * 1024
 MAX_WS_BYTES = int(os.environ.get("MAX_WORKSPACE_MB", "500")) * 1024 * 1024
 MAX_FILES = int(os.environ.get("MAX_FILES", "300"))
+
+TIME_BUCKETS = (0, .001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120)
+BYTE_BUCKETS = (0, 512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 500000000)
+HTTP_DURATION = Histogram("myoffice_http_request_duration_seconds", "응답 헤더까지 걸린 시간",
+                          ["method", "route", "status"], buckets=TIME_BUCKETS)
+HTTP_RESPONSE_BYTES = Histogram("myoffice_http_response_bytes", "응답 본문 바이트", ["route"], buckets=BYTE_BUCKETS)
+HTTP_REQUEST_BYTES = Histogram("myoffice_http_request_bytes", "읽은 요청 본문 바이트", ["route"], buckets=BYTE_BUCKETS)
+OO_CONVERT = Histogram("myoffice_oo_convert_seconds", "문서 변환과 결과 다운로드 시간", ["to"], buckets=TIME_BUCKETS)
+OO_FORCESAVE = Histogram("myoffice_oo_forcesave_seconds", "강제 저장 확인 시간", ["result"], buckets=TIME_BUCKETS)
+RUM_SEGMENTS = ("dns", "connect", "tls", "ttfb", "download", "total")
+RUM_DURATION = Histogram("myoffice_rum_segment_seconds", "브라우저 구간별 시간",
+                         ["kind", "segment", "page"], buckets=TIME_BUCKETS)
+RUM_TRANSFER = Histogram("myoffice_rum_transfer_bytes", "브라우저 전송 바이트",
+                         ["kind", "page"], buckets=BYTE_BUCKETS)
+RUM_RESOURCES = Counter("myoffice_rum_resources_total", "브라우저 리소스 수", ["kind", "cached", "page"])
+HTTP_METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
+TIMING_ORIGINS = ", ".join(origin for origin in CORS_ORIGINS if origin != "*")
+
+
+class HTTPMetrics:
+    """본문을 미리 읽거나 버퍼링하지 않고 ASGI 메시지를 계측한다."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+        elapsed = None
+        status = 500
+        request_bytes = response_bytes = 0
+
+        async def counted_receive():
+            nonlocal request_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                request_bytes += len(message.get("body", b""))
+            return message
+
+        async def counted_send(message):
+            nonlocal elapsed, status, response_bytes
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                elapsed = time.perf_counter() - started
+                if TIMING_ORIGINS:
+                    MutableHeaders(scope=message)["Timing-Allow-Origin"] = TIMING_ORIGINS
+            await send(message)
+            if message["type"] == "http.response.body" and scope["method"] != "HEAD":
+                response_bytes += len(message.get("body", b""))
+
+        try:
+            await self.app(scope, counted_receive, counted_send)
+        finally:
+            route = getattr(scope.get("route"), "path", "other")
+            method = scope["method"] if scope["method"] in HTTP_METHODS else "OTHER"
+            HTTP_DURATION.labels(method, route, status).observe(
+                elapsed if elapsed is not None else time.perf_counter() - started
+            )
+            HTTP_REQUEST_BYTES.labels(route).observe(request_bytes)
+            HTTP_RESPONSE_BYTES.labels(route).observe(response_bytes)
+
 
 # 형식별 분류
 WORD = {"docx", "doc", "odt", "rtf", "txt"}
@@ -126,15 +192,18 @@ async def autosave_loop():
                 pass
 
 
-from contextlib import asynccontextmanager  # noqa: E402
-
-
 @asynccontextmanager
 async def lifespan(_app):
     import asyncio
+    # 재시작 시 이전 리스너를 닫아 같은 포트를 다시 쓸 수 있게 한다.
+    server, _ = start_http_server(9000)
     task = asyncio.create_task(autosave_loop())
-    yield
-    task.cancel()
+    try:
+        yield
+    finally:
+        task.cancel()
+        server.shutdown()
+        server.server_close()
 
 
 app = FastAPI(lifespan=lifespan, title="rhwp office API", docs_url=None, redoc_url=None, openapi_url=None)
@@ -320,6 +389,78 @@ def client_ip(request: Request) -> str:
     if xff:
         return xff.split(",")[-1].strip()
     return request.client.host if request.client else ""
+
+
+# 브라우저 형식과 종류만 받고 임의 문자열을 라벨로 쓰지 않는다.
+RumKind = Literal["page", "app", "rhwp-wasm", "rhwp-font", "rhwp-other", "oo-sdk", "oo-font",
+                  "oo-other", "api", "analytics", "other"]
+RumSample = tuple[Optional[int], Optional[int], Optional[int], Optional[int], Optional[int], int, int, int, bool]
+RumSums = tuple[int, int, int, int, int, int, int, int]
+RUM_BODY_LIMIT = 64 * 1024
+_rum_minute = -1
+_rum_requests: dict[str, int] = {}
+
+
+class RumGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    count: int = Field(ge=1, le=200)
+    sums: RumSums
+    samples: list[RumSample] = Field(min_length=1, max_length=200)
+
+
+class RumPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    page: Literal["home", "edit"]
+    fileType: Optional[Literal["word", "cell", "slide", "hwp", "pdf"]] = None
+    groups: dict[RumKind, RumGroup] = Field(min_length=1, max_length=11)
+
+
+@app.post("/api/rum", status_code=204)
+async def collect_rum(request: Request):
+    global _rum_minute
+    minute = int(time.monotonic() // 60)
+    if minute != _rum_minute:
+        _rum_requests.clear()
+        _rum_minute = minute
+    ip = client_ip(request)
+    count = _rum_requests.get(ip, 0)
+    if count >= 30 or (ip not in _rum_requests and len(_rum_requests) >= 10000):
+        raise HTTPException(429, "too many samples")
+    _rum_requests[ip] = count + 1
+
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type not in {"text/plain", "application/json"}:
+        raise HTTPException(415, "unsupported media type")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > RUM_BODY_LIMIT:
+            raise HTTPException(413, "payload too large")
+        body.extend(chunk)
+    try:
+        payload = RumPayload.model_validate_json(body)
+    except ValidationError:
+        raise HTTPException(422, "invalid samples") from None
+
+    if (payload.fileType is not None and payload.page != "edit"
+            or sum(group.count for group in payload.groups.values()) > 200):
+        raise HTTPException(422, "invalid samples")
+    for group in payload.groups.values():
+        sums = tuple(sum(value or 0 for value in column) for column in zip(*(row[:8] for row in group.samples)))
+        if group.count != len(group.samples) or group.sums != sums:
+            raise HTTPException(422, "invalid group totals")
+
+    for kind, group in payload.groups.items():
+        for sample in group.samples:
+            for segment, ms in zip(RUM_SEGMENTS, sample[:6]):
+                if ms is not None:
+                    RUM_DURATION.labels(kind, segment, payload.page).observe(min(120000, max(0, ms)) / 1000)
+            transfer, encoded = (min(500000000, max(0, value)) for value in sample[6:8])
+            RUM_TRANSFER.labels(kind, payload.page).observe(transfer)
+            cached = transfer == 0 and encoded > 0
+            RUM_RESOURCES.labels(kind, "true" if cached else "false", payload.page).inc()
+    return Response(status_code=204)
 
 
 SIGNUPS_PER_HOUR = int(os.environ.get("SIGNUPS_PER_IP_HOUR", "20"))
@@ -962,19 +1103,31 @@ async def convert_bytes(ws: str, fid: str, meta: dict, to: str) -> bytes:
         "url": f"{API_INTERNAL_URL}/internal/dl/{ws}/{fid}?sig={sign('oo-dl', ws, fid)}",
     }
     req["token"] = jwt.encode(req, JWT_SECRET, algorithm="HS256")
-    async with httpx.AsyncClient(timeout=180) as c:
-        r = await c.post(f"{DS_INTERNAL_URL}converter", json=req, headers={"Accept": "application/json"})
-        res = r.json()
-        if res.get("error") or not res.get("endConvert"):
-            raise HTTPException(502, f"변환 실패 (code {res.get('error')})")
-        f = await c.get(to_internal(res["fileUrl"]))
-        if f.status_code != 200:
-            f = await c.get(res["fileUrl"])
-        f.raise_for_status()
+    with OO_CONVERT.labels(to).time():
+        async with httpx.AsyncClient(timeout=180) as c:
+            r = await c.post(f"{DS_INTERNAL_URL}converter", json=req, headers={"Accept": "application/json"})
+            res = r.json()
+            if res.get("error") or not res.get("endConvert"):
+                raise HTTPException(502, f"변환 실패 (code {res.get('error')})")
+            f = await c.get(to_internal(res["fileUrl"]))
+            if f.status_code != 200:
+                f = await c.get(res["fileUrl"])
+            f.raise_for_status()
     return f.content
 
 
 async def forcesave(ws: str, fid: str, wait: float = 8) -> tuple[dict, bool]:
+    started = time.perf_counter()
+    result = "error"
+    try:
+        meta, saved = await _forcesave(ws, fid, wait)
+        result = "saved" if saved else "unconfirmed"
+        return meta, saved
+    finally:
+        OO_FORCESAVE.labels(result).observe(time.perf_counter() - started)
+
+
+async def _forcesave(ws: str, fid: str, wait: float = 8) -> tuple[dict, bool]:
     """편집 중인 Office 문서면 강제 저장을 요청하고 파일이 바뀔 때까지 기다린다.
     돌려주는 값: (최신 메타, 저장소가 최신인지). 열려 있지 않거나 바뀐 게 없으면(error 4) 이미 최신."""
     import asyncio
@@ -1040,7 +1193,6 @@ async def export(body: Convert, a: Access = Depends(access)):
     to = body.to.lower()
     data = await convert_bytes(a.ws, a.fid, meta, to)
     name = f"{meta['name'].rsplit('.', 1)[0]}.{to}"
-    from fastapi.responses import Response
     return Response(data, media_type="application/pdf" if to == "pdf" else "application/octet-stream",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
@@ -1084,3 +1236,7 @@ async def file_socket(sock: WebSocket, fid: str, uid: str = "", name: str = "",
         pass
     finally:
         await rooms.leave(fid, uid, sock, grace=grace)
+
+
+# FastAPI가 생성하는 서버 오류 응답도 함께 계측한다.
+app = HTTPMetrics(app)
