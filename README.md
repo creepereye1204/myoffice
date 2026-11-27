@@ -25,6 +25,52 @@
   - Ctrl+S: 어디서 눌러도 브라우저 저장 창 대신 서버 저장, 실제 저장이 확인된 뒤에만 "저장했습니다"
 - PDF: 편집기의 PDF 버튼 / 홈 메뉴 "PDF로 다운로드", 형식 변환 사본(HWP→DOCX 등)
 
+## 아키텍처
+
+```mermaid
+flowchart LR
+  B["브라우저<br/>홈·편집 화면<br/>rhwp-studio(한글, wasm)<br/>ONLYOFFICE 편집기 화면"]
+  H["HAProxy (공용 앞단)<br/>TLS 종료 · 도메인별 연결<br/>도커 DNS 로 컨테이너 IP 추적"]
+  subgraph rhwp_default["도커 네트워크 rhwp_default"]
+    W["rhwp-web (nginx)<br/>정적 파일 · 글꼴/wasm brotli<br/>/office/ · /api/ · /grafana/ 프록시"]
+    A["rhwp-api (FastAPI)<br/>계정·파일·공유·잠금<br/>실시간 방 WebSocket<br/>측정 :9000"]
+    O["rhwp-onlyoffice<br/>Document Server 9.2<br/>공동 편집 · 변환(x2t)"]
+    D[("data/<br/>app.db (SQLite)<br/>ws/계정/파일")]
+    P["rhwp-prometheus"]
+    G["rhwp-grafana"]
+    C["rhwp-cadvisor"]
+  end
+  B -- "https www.<도메인>" --> H
+  B -- "https api.<도메인><br/>REST · /ws/files/{id}" --> H
+  H --> W
+  H --> A
+  W -- "/office/ (편집기·공동 편집 WebSocket)" --> O
+  W -- "/api/" --> A
+  W -- "/grafana/" --> G
+  O -- "문서 받기 /internal/dl (HMAC)<br/>저장 콜백 /internal/callback (JWT)" --> A
+  A -- "변환·강제 저장 명령" --> O
+  A --- D
+  P -- "수집" --> A
+  P -- "수집" --> C
+  G --> P
+```
+
+| 구성 요소 | 하는 일 |
+|---|---|
+| 브라우저 | 홈(`index.html`·`home.js`)과 편집(`edit.html`·`edit.js`) 화면. 한글은 **rhwp-studio**(wasm)가 브라우저 안에서 읽고 쓴다. 워드·엑셀·파워포인트(한셀·한쇼 포함)는 ONLYOFFICE 편집기 화면이 iframe 으로 뜬다. `rum.js` 가 요청 구간별 시간을 API 로 보낸다. |
+| HAProxy | 서버의 여러 프로젝트가 같이 쓰는 앞단. TLS 인증서, 도메인별 백엔드 연결. 도커 DNS 로 컨테이너 IP 를 따라가서 재배포 후 재시작이 필요 없다. |
+| rhwp-web (nginx) | 정적 파일(화면, rhwp-studio, 글꼴, wasm — 미리 brotli 압축, 30일 캐시). 같은 출처 프록시: `/office/` → ONLYOFFICE, `/api/` → API, `/grafana/` → Grafana. |
+| rhwp-api (FastAPI) | 계정·세션, 파일 저장·버전, 공유(사용자 지정·링크), 한글 편집 잠금, 실시간 방(`/ws/files/{id}`: 접속자, 잠금, 저장 알림, 마우스·드래그·선택 표시), ONLYOFFICE 설정 발급과 저장 콜백, 변환·PDF. 측정값은 내부 포트 9000 에서만. |
+| rhwp-onlyoffice | ONLYOFFICE Document Server Community 9.2. 워드·엑셀·파워포인트 편집 화면, 글자 단위 공동 편집, 30초 강제 저장, 형식 변환(x2t). |
+| data/ | `app.db`(계정·세션·공유) + `ws/<계정>/<파일 id>/`(파일 본문, `meta.json`). 컨테이너 밖 서버 디스크라 재배포해도 남는다. |
+| 모니터링 | Prometheus(API·cAdvisor 수집, 30일 보관) → Grafana 대시보드 "알오피스 — 요청 구간". |
+
+**주요 흐름**
+1. **한글 문서 열기·저장:** 브라우저가 `GET /api/files/{id}/content` 로 받아 rhwp-studio 에서 연다 → 수정 후 5초 쉬면(또는 Ctrl+S) 브라우저가 `exportHwp/exportHwpx` → `PUT /api/files/{id}/content` (편집 잠금·버전 확인). 같은 문서를 보는 다른 사람은 실시간 방의 "저장됨" 알림을 받고 새 내용으로 다시 연다.
+2. **워드·엑셀·파워포인트 열기·저장:** 브라우저가 `GET /api/files/{id}/onlyoffice` 로 편집기 설정(JWT 서명)을 받아 ONLYOFFICE 편집기를 띄운다 → ONLYOFFICE 가 API 의 `/internal/dl`(HMAC 서명 주소)로 파일을 받는다 → 편집 내용은 ONLYOFFICE 끼리 WebSocket 으로 공동 편집 → 30초마다 또는 Ctrl+S 때 ONLYOFFICE 가 `/internal/callback` 으로 결과 파일을 보내면 API 가 저장하고 실시간 방에 알린다.
+3. **공유:** 사용자 지정(아이디별 보기/편집) 또는 링크(`/edit?s=<토큰>`, 로그인 없이). API 가 요청마다 권한을 확인한다.
+4. **변환·PDF:** API 가 ONLYOFFICE ConversionService 에 변환을 맡긴다 (한글 → 워드/PDF 포함).
+
 ## 구조
 - 인증: `POST /api/auth/login` → 세션 토큰을 `Authorization: Bearer` 로. DB는 `data/app.db`(SQLite, 비밀번호 scrypt, 토큰은 해시만 저장)
 - 관리자: 첫 실행 때 `.env`의 `ADMIN_USERNAME`/`ADMIN_PASSWORD`로 생성.
