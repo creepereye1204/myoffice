@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { newUser, newGuest, create, api, openEditor, noErrors } from './helpers.js';
+import { newUser, newGuest, create, api, openEditor, noErrors, hwpType, ooType } from './helpers.js';
 
 for (const kind of ['hwp', 'docx']) {
   test(`공유 포인터: ${kind} 보기 전용 손님에게 소유자 이름 표시`, async ({ browser }) => {
@@ -53,6 +53,68 @@ for (const kind of ['hwp', 'docx']) {
     }
     await owner.page.locator('#title').hover();
     await expect(cursor).toHaveCount(0, { timeout: 5000 });
+    noErrors(owner.errors);
+    noErrors(guest.errors);
+  });
+}
+
+for (const kind of ['hwp', 'docx']) {
+  test(`공유 글자 선택: ${kind} 드래그 중 표시하고 선택을 풀면 지운다`, async ({ browser }) => {
+    const owner = await newUser(browser, '김주인');
+    const guest = await newUser(browser, '이손님');
+    const f = await create(owner, kind);
+    const { token } = await api(owner, `/api/files/${f.id}/share`, { method: 'POST', json: { mode: 'view' } });
+    await openEditor(owner.page, `id=${f.id}`);
+    await owner.page.bringToFront();
+    const hwp = kind === 'hwp';
+    if (hwp) await expect(owner.page.locator('#save')).toBeVisible();
+    await (hwp ? hwpType : ooType)(owner.page, 'Collaborative text selection');
+    await owner.page.keyboard.press('Control+s');
+    await expect(owner.page.locator('.toast.ok').first()).toContainText('저장했습니다', { timeout: 30_000 });
+    await openEditor(guest.page, `s=${token}`);
+    const avatar = guest.page.locator(`#people .avatar[data-uid="${owner.uid}"]`);
+    await expect(avatar).toBeVisible();
+    const color = await avatar.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const remote = guest.page.locator(`.remote-selection[data-uid="${owner.uid}"]`);
+    await owner.page.bringToFront();
+
+    // 먼저 키보드로 선택해 현재 배율에서 드래그할 글자 줄의 위치를 찾는다.
+    const frame = owner.page.frameLocator(hwp ? '#hwp iframe' : 'iframe[name="frameEditor"]');
+    const surface = frame.locator(hwp ? '#scroll-container' : '#editor_sdk');
+    await surface.click({ position: { x: (await surface.boundingBox()).width / 2, y: 80 } });
+    await owner.page.keyboard.press('Control+a');
+    let line;
+    if (hwp) {
+      const highlight = surface.locator('.selection-layer > .selection-highlight:visible').first();
+      await expect(highlight).toBeVisible();
+      line = await highlight.boundingBox();
+    } else {
+      const local = await surface.evaluate((el) => {
+        const win = el.ownerDocument.defaultView;
+        const control = (win.Asc?.editor || win.editor).WordControl;
+        const { Start: start, End: last } = control.m_oLogicDocument.GetSelectionBounds();
+        const { X: x, Y: y } = control.m_oDrawingDocument.ConvertCoordsToCursor3(start.X, start.Y, start.Page, true);
+        const end = control.m_oDrawingDocument.ConvertCoordsToCursor3(last.X + last.W, start.Y + start.H, start.Page, true);
+        return { x, y, width: end.X - x, height: end.Y - y };
+      });
+      const iframe = await owner.page.locator('iframe[name="frameEditor"]').boundingBox();
+      line = { ...local, x: local.x + iframe.x, y: local.y + iframe.y };
+    }
+    expect(line.width).toBeGreaterThan(20);
+    const x = line.x + 2, y = line.y + line.height / 2;
+    await expect(remote.first()).toBeVisible();
+    await owner.page.mouse.click(x, y);
+    await expect(remote).toHaveCount(0);
+    await owner.page.mouse.move(x, y);
+    await owner.page.mouse.down();
+    await owner.page.mouse.move(x + line.width * .75, y, { steps: 12 });
+    await expect(remote.first()).toBeVisible();
+    await expect(remote.first()).toHaveCSS('color', color);
+    await owner.page.mouse.up();
+    await owner.page.waitForTimeout(3200);
+    await expect(remote.first()).toBeVisible();
+    await owner.page.mouse.click(x + line.width * .9, y);
+    await expect(remote).toHaveCount(0);
     noErrors(owner.errors);
     noErrors(guest.errors);
   });

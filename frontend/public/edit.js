@@ -53,33 +53,48 @@ $('#people').addEventListener('click', (e) => { if (e.target.closest('.avatar.me
 const remoteCursors = new Map();
 let cursorFrame = 0, cursorTimer = 0, cursorOnline = false;
 let pendingCursor, pendingRelease, lastCursor, lastCursorTime = -Infinity;
+let pendingTextSelection, lastTextSelection, lastTextSelectionTime = -Infinity;
 
 function flushCursor() {
   cursorTimer = 0;
-  const pos = pendingRelease ?? pendingCursor;
-  if (!cursorOnline || !pos || (document.hidden && pos.x !== null)) return;
+  if (!cursorOnline) return;
+  const next = pendingRelease ?? pendingCursor;
+  const pos = document.hidden && next?.x !== null ? undefined : next;
   if (pendingRelease) pendingRelease = undefined;
   else pendingCursor = undefined;
-  const key = JSON.stringify(pos);
-  if (key !== lastCursor || pos.sel) {
-    room.send({ type: 'cursor', ...pos });
+  const payload = { type: 'cursor' };
+  if (pos) {
+    const key = JSON.stringify(pos);
+    if (key !== lastCursor) Object.assign(payload, pos);
     lastCursor = pos.x === null ? undefined : key;
+  }
+  if (pendingTextSelection !== undefined) {
+    payload.ts = pendingTextSelection;
+    lastTextSelection = JSON.stringify(pendingTextSelection);
+    lastTextSelectionTime = performance.now();
+    pendingTextSelection = undefined;
+  }
+  if ('x' in payload || 'ts' in payload) {
+    room.send(payload);
     lastCursorTime = performance.now();
   }
-  if (pendingCursor) queueCursor(pendingCursor);
+  if (pendingCursor) scheduleCursor();
+}
+
+function scheduleCursor() {
+  if (cursorTimer) return;
+  const delay = 50 - (performance.now() - lastCursorTime);
+  if (delay <= 0) flushCursor();
+  else cursorTimer = setTimeout(flushCursor, Math.ceil(delay));
 }
 
 function queueCursor(pos, release = false) {
   if (!cursorOnline || (pos.x === null && !lastCursor && !pendingCursor && !pendingRelease)) return;
   if (release) {
-    // 다음 포인터 이동이 마우스를 놓을 때의 선택 영역을 덮어쓰지 않게 한다.
     pendingRelease = pos;
     pendingCursor = undefined;
   } else pendingCursor = pos;
-  if (cursorTimer) return;
-  const delay = 50 - (performance.now() - lastCursorTime);
-  if (delay <= 0) flushCursor();
-  else cursorTimer = setTimeout(flushCursor, Math.ceil(delay));
+  scheduleCursor();
 }
 
 function hideCursor() {
@@ -127,10 +142,13 @@ function wordCursorDocument(win) {
   // 워드: WordControl 의 페이지 변환기가 현재 스크롤, 배율, 눈금자 위치를 반영한다.
   // 셀은 시트·틀 고정, 슬라이드는 현재 장표에 따라 기준이 달라 viewport 비율을 쓴다.
   if (file.type !== 'word') return null;
-  const sdk = win.Asc?.editor || win.editor;
-  const drawing = sdk?.WordControl?.m_oDrawingDocument;
+  const drawing = officeSdk(win)?.WordControl?.m_oDrawingDocument;
   return typeof drawing?.ConvertCoordsFromCursor2 === 'function' &&
     typeof drawing.ConvertCoordsToCursor3 === 'function' ? drawing : null;
+}
+
+function officeSdk(win) {
+  return win.Asc?.editor || win.editor;
 }
 
 function cursorPosition(win, surface, x, y) {
@@ -160,6 +178,8 @@ function cursorPosition(win, surface, x, y) {
 
 let cursorSurface, dragStart;
 const cursorDocs = new WeakSet();
+const selectionSdks = new WeakSet();
+const hwpSelectionCache = new WeakMap();
 
 function eventCursorPosition(win, e) {
   if (document.hidden || !e.isPrimary || !cursorSurface?.surface.isConnected) return null;
@@ -168,22 +188,191 @@ function eventCursorPosition(win, e) {
   return cursorPosition(target, surface, e.clientX + from.x - to.x, e.clientY + from.y - to.y);
 }
 
-function hwpSelectionRects(surface, pos) {
-  if (pos.space !== 'hwp' || pos.page === undefined) return [];
-  const page = hwpCursorLayout(surface).pages.find((p) => p.page === pos.page && p.zoom > 0);
-  if (!page) return [];
+function hwpSelectionRects(surface) {
+  const highlights = surface.querySelectorAll('.selection-layer > .selection-highlight:not([style*="display: none"])');
+  if (!highlights.length) return [];
+  const { pages } = hwpCursorLayout(surface);
   const rects = [];
-  // rhwp는 글자 선택을 별도 DOM 층에 그린다. 현재 페이지의 글자 선택만 읽는다.
-  for (const el of surface.querySelectorAll('.selection-layer > .selection-highlight')) {
+  // rhwp가 그린 선택 영역을 각 페이지의 원본 좌표로 되돌린다.
+  for (const el of highlights) {
     if (el.style.display === 'none') continue;
-    const box = el.getBoundingClientRect(), { left, top, right, bottom } = page.box;
-    if (!box.width || !box.height || box.left < left - 1 || box.right > right + 1 ||
-        box.top < top - 1 || box.bottom > bottom + 1) continue;
-    rects.push([(box.left - left) / page.zoom, (box.top - top) / page.zoom,
-      box.width / page.zoom, box.height / page.zoom]);
-    if (rects.length === 20) break;
+    const box = el.getBoundingClientRect();
+    if (!box.width || !box.height) continue;
+    const page = pages.find(({ page, box: p, zoom }) => page !== null && zoom > 0 &&
+      box.left >= p.left - 1 && box.right <= p.right + 1 && box.top >= p.top - 1 && box.bottom <= p.bottom + 1);
+    if (page) {
+      const rect = [page.page, (box.left - page.box.left) / page.zoom, (box.top - page.box.top) / page.zoom,
+        box.width / page.zoom, box.height / page.zoom];
+      hwpSelectionCache.set(el, { style: el.style.cssText, rect });
+      rects.push(rect);
+    } else {
+      // 스크롤로 캔버스가 반환되어도 같은 선택의 페이지 좌표는 유지한다.
+      const cached = hwpSelectionCache.get(el);
+      if (cached?.style === el.style.cssText) rects.push(cached.rect);
+    }
+    if (rects.length === 40) break;
   }
   return rects;
+}
+
+function captureOfficeSelection(drawing, draw) {
+  const rects = [];
+  const { AddPageSelection, TextMatrix, IsTextSelectionOutline } = drawing;
+  // SDK의 그리기 경로에서 mm 좌표만 읽고 실제 오버레이에는 그리지 않는다.
+  drawing.AddPageSelection = function (page, x, y, w, h) {
+    if (rects.length >= 40 || !(w > 0 && h > 0)) return;
+    const matrix = this.TextMatrix;
+    if (!matrix) {
+      rects.push([page, x, y, w, h]);
+      return;
+    }
+    const corners = [[x, y], [x + w, y], [x, y + h], [x + w, y + h]];
+    const xs = corners.map(([cx, cy]) => matrix.TransformPointX(cx, cy));
+    const ys = corners.map(([cx, cy]) => matrix.TransformPointY(cx, cy));
+    const left = Math.min(...xs), top = Math.min(...ys);
+    rects.push([page, left, top, Math.max(...xs) - left, Math.max(...ys) - top]);
+  };
+  try {
+    draw(rects);
+  } finally {
+    Object.assign(drawing, { AddPageSelection, TextMatrix, IsTextSelectionOutline });
+  }
+  return rects;
+}
+
+function wordSelectionRects(control) {
+  const logic = control?.m_oLogicDocument, drawing = control?.m_oDrawingDocument;
+  if (!logic || !(logic.IsSelectionUse?.() ?? drawing?.m_bIsSelection) || logic.IsSelectionEmpty?.()) return [];
+  const { Start: start, End: end } = logic.GetSelectionBounds?.() || {};
+  const hasBounds = Number.isInteger(start?.Page) && Number.isInteger(end?.Page);
+  const first = hasBounds ? start.Page : drawing?.m_lDrawingFirst;
+  const last = hasBounds ? end.Page : drawing?.m_lDrawingEnd;
+  if (typeof drawing?.AddPageSelection === 'function' && typeof logic.DrawSelectionOnPage === 'function') {
+    const rects = captureOfficeSelection(drawing, (result) => {
+      for (let page = Math.max(0, first); page <= last && page < drawing.m_lPagesCount &&
+           page < first + 40 && result.length < 40; page++) {
+        logic.DrawSelectionOnPage(page);
+      }
+    });
+    if (rects.length) return rects;
+  }
+  if (!hasBounds || first < 0 || last < first) return [];
+  if (first === last && Math.abs(start.Y - end.Y) < .01) {
+    return [[first, start.X, start.Y, end.X + end.W - start.X, start.H]];
+  }
+  const rects = [];
+  // 줄별 좌표가 없는 SDK에서는 문서 여백과 양 끝 줄의 높이로 근사한다.
+  for (let page = first; page <= last && page < first + 40 && rects.length < 40; page++) {
+    const fields = logic.Get_PageFields?.(page);
+    if (!fields) break;
+    const height = page === last ? end.H : start.H;
+    const bottom = page === last ? end.Y : fields.YLimit;
+    if (!(height > 0)) break;
+    let y = page === first ? start.Y : fields.Y;
+    for (; y < bottom - .01 && rects.length < (page === last ? 39 : 40); y += height) {
+      const x = page === first && y === start.Y ? start.X : fields.X;
+      rects.push([page, x, y, fields.XLimit - x, Math.min(height, bottom - y)]);
+    }
+    if (page === last) rects.push([page, fields.X, end.Y, end.X + end.W - fields.X, end.H]);
+  }
+  return rects;
+}
+
+function slideSelectionRects(control) {
+  const logic = control?.m_oLogicDocument, drawing = control?.m_oDrawingDocument;
+  if (!drawing?.m_bIsSelection || typeof drawing.AddPageSelection !== 'function' ||
+      logic?.IsFocusOnNotes?.() || logic?.IsFocusOnOutline?.()) return [];
+  const slide = logic?.GetCurrentSlide?.();
+  if (typeof slide?.drawSelect !== 'function') return [];
+  // 첫 번째 그리기 단계는 도형 안의 글자 선택을 그린다.
+  return captureOfficeSelection(drawing, () => slide.drawSelect(1))
+    .filter(([page]) => page === drawing.SlideCurrent);
+}
+
+function activeWorksheet(win) {
+  const sdk = officeSdk(win), sheet = sdk?.asc_getActiveWorksheetIndex?.();
+  if (!Number.isInteger(sheet) || sheet < 0) return {};
+  return { sheet, worksheet: sdk.wb?.getWorksheet?.(sheet, true) };
+}
+
+function cellSelectionBoxes(win, rect, selection) {
+  const { sheet, worksheet } = activeWorksheet(win);
+  const canvas = win.document.querySelector('#ws-canvas');
+  const visible = worksheet?.getVisibleRange?.();
+  if (sheet !== selection.sheet || !canvas?.width || !canvas.height || !visible ||
+      typeof worksheet.getCellMetrics !== 'function') return [];
+  const box = canvas.getBoundingClientRect();
+  const sx = box.width / canvas.width, sy = box.height / canvas.height;
+  const frozen = worksheet.getFrozenCell?.();
+  const fc = frozen?.getCol0() || 0, fr = frozen?.getRow0() || 0;
+  const c0 = worksheet._getFrozenScrollCol0?.() ?? 0, r0 = worksheet._getFrozenScrollRow0?.() ?? 0;
+  const cols = [[visible.c1, visible.c2]], rows = [[visible.r1, visible.r2]];
+  if (fc > c0) cols.unshift([c0, fc - 1]);
+  if (fr > r0) rows.unshift([r0, fr - 1]);
+  const rtl = worksheet.getRightToLeft?.();
+  const px = (x) => box.left - rect.left + (rtl ? canvas.width - x : x) * sx;
+  const py = (y) => box.top - rect.top + y * sy;
+  const result = [];
+  // 틀 고정 경계를 넘는 범위는 현재 보이는 각 구역에서 따로 그린다.
+  for (const [r1, c1, r2, c2] of selection.ranges) {
+    for (const [left, right] of cols) {
+      for (const [top, bottom] of rows) {
+        const c = Math.max(left, c1), r = Math.max(top, r1);
+        const endCol = Math.min(right, c2), endRow = Math.min(bottom, r2);
+        if (c > endCol || r > endRow) continue;
+        const a = worksheet.getCellMetrics(c, r), b = worksheet.getCellMetrics(endCol, endRow);
+        if (!a || !b) continue;
+        const minX = left >= fc && fc > c0 ? worksheet._getColLeft(fc) - worksheet._getColLeft(c0) + worksheet.cellsLeft : worksheet.cellsLeft;
+        const minY = top >= fr && fr > r0 ? worksheet._getRowTop(fr) - worksheet._getRowTop(r0) + worksheet.cellsTop : worksheet.cellsTop;
+        const x = Math.max(a.left, minX), y = Math.max(a.top, minY);
+        const x2 = Math.min(canvas.width, b.left + b.width), y2 = Math.min(canvas.height, b.top + b.height);
+        if (x < x2 && y < y2) result.push([[px(x), py(y)], [px(x2), py(y2)]]);
+      }
+    }
+  }
+  return result;
+}
+
+function readTextSelection(win, surface) {
+  const space = file.type;
+  if (space === 'cell') {
+    const { sheet, worksheet } = activeWorksheet(win);
+    const selected = worksheet?._getSelection?.()?.ranges;
+    if (!selected?.length) return null;
+    const ranges = selected.slice(0, 20).map(({ r1, c1, r2, c2 }) => [r1, c1, r2, c2]);
+    return { space, sheet, ranges };
+  }
+  const control = space !== 'hwp' && officeSdk(win)?.WordControl;
+  let selection = [];
+  if (space === 'hwp') selection = hwpSelectionRects(surface);
+  else if (space === 'word') selection = wordSelectionRects(control);
+  else if (space === 'slide') selection = slideSelectionRects(control);
+  const rects = selection
+    .filter(([page, x, y, w, h]) => Number.isInteger(page) && page >= 0 &&
+      [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0)
+    .map((r) => r.map((v) => Math.round(v * 1000) / 1000))
+    .filter(([, , , w, h]) => w > 0 && h > 0);
+  return rects.length ? { space, rects } : null;
+}
+
+function updateTextSelection(force = false) {
+  if (!cursorOnline) return;
+  try {
+    const { win, surface } = cursorSurface || {};
+    const ts = surface?.isConnected ? readTextSelection(win, surface) : null;
+    const key = JSON.stringify(ts);
+    // 선택을 유지하는 동안 만료되기 전에 한 번 더 보낸다.
+    if (key === lastTextSelection && !(ts && (force || performance.now() - lastTextSelectionTime >= 30000))) {
+      pendingTextSelection = undefined;
+      return;
+    }
+    if (!ts && lastTextSelection === undefined) {
+      pendingTextSelection = undefined;
+      return;
+    }
+    pendingTextSelection = ts;
+    scheduleCursor();
+  } catch { /* 문서 전환 중에는 다음 확인까지 마지막 선택을 유지한다 */ }
 }
 
 function cancelCursorDrag() {
@@ -194,7 +383,21 @@ function cancelCursorDrag() {
 function hookCursorWin(win) {
   const doc = win.document;
   const surface = cursorEditorSurface(win);
-  if (surface) cursorSurface = { win, surface };
+  if (surface) {
+    cursorSurface = { win, surface };
+    const sdk = file.type !== 'hwp' && officeSdk(win);
+    if (sdk?.asc_registerCallback && !selectionSdks.has(sdk)) {
+      selectionSdks.add(sdk);
+      const sync = () => queueMicrotask(() => {
+        if (cursorSurface?.win === win && surface.isConnected) updateTextSelection();
+      });
+      if (file.type === 'cell') sdk.asc_registerCallback('asc_onSelectionChanged', sync);
+      if (file.type === 'word') {
+        sdk.asc_registerCallback('asc_onSelectionEnd', sync);
+        sdk.asc_registerCallback('asc_onSelectionCancel', sync);
+      }
+    }
+  }
   if (cursorDocs.has(doc)) return;
   cursorDocs.add(doc);
   win.addEventListener('pointerdown', (e) => {
@@ -226,8 +429,6 @@ function hookCursorWin(win) {
     if (!moved) return;
     const pos = eventCursorPosition(win, e);
     if (!pos || surface !== cursorSurface.surface) return hideCursor();
-    const sel = hwpSelectionRects(surface, pos);
-    if (sel.length) pos.sel = sel;
     queueCursor(pos, true);
   }, true);
   win.addEventListener('pointercancel', cancelCursorDrag, true);
@@ -243,6 +444,16 @@ function startCursors() {
   };
   scan();
   setInterval(scan, 500);
+  let focused = false;
+  setInterval(() => {
+    const surface = cursorSurface?.surface;
+    const hasFocus = surface?.isConnected && surface.ownerDocument.hasFocus();
+    if (file.type === 'hwp' || hasFocus || focused ||
+        (lastTextSelection && lastTextSelection !== 'null' && performance.now() - lastTextSelectionTime >= 30000)) {
+      updateTextSelection();
+    }
+    focused = hasFocus;
+  }, 150);
   $('#stage').addEventListener('pointerleave', hideCursor);
   $('#stage').addEventListener('pointermove', hideCursor);
   window.addEventListener('pointerup', (e) => {
@@ -261,6 +472,7 @@ function removeRemoteCursor(uid) {
   entry.el.remove();
   entry.dragEl.remove();
   for (const el of entry.selectionEls) el.remove();
+  for (const el of entry.textEls) el.remove();
   remoteCursors.delete(uid);
 }
 
@@ -277,36 +489,50 @@ function receiveCursor(msg) {
   if (msg.uid === me.uid) return;
   const user = presence.users.find((u) => u.uid === msg.uid);
   let entry = remoteCursors.get(msg.uid);
-  if (!user || (msg.x === null && !entry)) return;
+  if (!user || (!entry && msg.x == null && !msg.ts)) return;
   if (!entry) {
     const el = cursorRect('remote-cursor', msg.uid);
     el.innerHTML = '<svg viewBox="0 0 16 19"><path d="M2 1l12 11-6 1-3 5z" fill="currentColor" stroke="white" stroke-linejoin="round"/></svg><span></span>';
-    entry = { el, label: el.querySelector('span'), dragEl: cursorRect('remote-drag', msg.uid), selectionEls: [] };
+    entry = {
+      el, label: el.querySelector('span'), dragEl: cursorRect('remote-drag', msg.uid),
+      selectionEls: [], textEls: [], msg: { x: null }, expires: 0,
+    };
     remoteCursors.set(msg.uid, entry);
   }
   const now = performance.now();
-  if (msg.d) entry.drag = { msg, fade: 0 };
-  else if (entry.drag && !entry.drag.fade) {
-    const start = entry.drag.msg;
-    if (msg.space === start.space) {
-      entry.drag.msg = { ...msg, d: start.d, dp: start.dp === undefined ? start.page ?? null : start.dp };
+  if ('x' in msg) {
+    if (msg.d) entry.drag = { msg, fade: 0 };
+    else if (entry.drag && !entry.drag.fade) {
+      const start = entry.drag.msg;
+      if (msg.space === start.space) {
+        entry.drag.msg = { ...msg, d: start.d, dp: start.dp === undefined ? start.page ?? null : start.dp };
+      }
+      entry.drag.fade = now + 600;
     }
-    entry.drag.fade = now + 600;
+    entry.msg = msg;
+    entry.expires = now + 10000;
   }
   if (msg.sel?.length) {
     for (const el of entry.selectionEls) el.remove();
     entry.selectionEls = msg.sel.map(() => cursorRect('remote-selection', msg.uid));
     entry.selection = { msg, expires: now + 3000 };
   }
-  entry.msg = msg;
-  entry.expires = now + 10000;
+  if ('ts' in msg) {
+    entry.text = msg.ts ? { selection: msg.ts, expires: now + 60000 } : undefined;
+    if (!entry.text) clearTextRects(entry);
+  }
   if (!cursorFrame) drawCursors(now);
+}
+
+function clearTextRects(entry) {
+  for (const el of entry.textEls) el.remove();
+  entry.textEls.length = 0;
 }
 
 function drawCursors(now) {
   cursorFrame = 0;
   for (const [uid, entry] of remoteCursors) {
-    if (entry.drag?.fade && now >= entry.drag.fade) {
+    if (entry.drag && (now >= entry.expires || (entry.drag.fade && now >= entry.drag.fade))) {
       entry.drag = undefined;
       entry.dragEl.hidden = true;
     }
@@ -315,16 +541,22 @@ function drawCursors(now) {
       entry.selectionEls = [];
       entry.selection = undefined;
     }
+    if (entry.text && now >= entry.text.expires) {
+      entry.text = undefined;
+      clearTextRects(entry);
+    }
+    if (now >= entry.expires) entry.msg = { x: null };
     const user = presence.users.find((u) => u.uid === uid);
-    if (!user || now >= entry.expires || (entry.msg.x === null && !entry.drag && !entry.selection)) removeRemoteCursor(uid);
+    if (!user || (entry.msg.x === null && !entry.drag && !entry.selection && !entry.text)) removeRemoteCursor(uid);
   }
   if (!remoteCursors.size) return;
   // 스크롤·확대 중에는 새 패킷이 없어도 현재 편집기 위치로 다시 그린다.
   cursorFrame = requestAnimationFrame(drawCursors);
   if (!cursorSurface?.surface.isConnected) {
-    for (const { el, dragEl, selectionEls } of remoteCursors.values()) {
+    for (const { el, dragEl, selectionEls, textEls } of remoteCursors.values()) {
       el.hidden = dragEl.hidden = true;
       for (const highlight of selectionEls) highlight.hidden = true;
+      for (const highlight of textEls) highlight.hidden = true;
     }
     return;
   }
@@ -334,9 +566,13 @@ function drawCursors(now) {
     const layer = $('#remote-cursors').getBoundingClientRect();
     const hwp = file.type === 'hwp' ? hwpCursorLayout(surface) : null;
     const word = wordCursorDocument(win);
+    const slide = file.type === 'slide' ? officeSdk(win)?.WordControl?.m_oDrawingDocument : null;
+    const viewer = (word || slide) && win.document.querySelector('#id_viewer')?.getBoundingClientRect();
     const width = hwp ? surface.clientWidth : rect.width;
     const height = hwp ? surface.clientHeight : rect.height;
     const left = origin.x + rect.left - layer.left, top = origin.y + rect.top - layer.top;
+    const textClip = viewer ? [viewer.left - rect.left, viewer.top - rect.top, viewer.right - rect.left, viewer.bottom - rect.top] :
+      [0, 0, width, height];
     const project = (space, pageIndex, x, y) => {
       if (space === 'viewport') return [x * width, y * height];
       if (hwp && space === 'hwp') {
@@ -348,13 +584,18 @@ function drawCursors(now) {
         const point = word.ConvertCoordsToCursor3(x, y, pageIndex, true);
         if (point && !point.Error) return [point.X - rect.left, point.Y - rect.top];
       }
+      if (slide?.SlideCurrent === pageIndex && space === 'slide') {
+        const point = slide.ConvertCoordsToCursor3?.(x, y, true);
+        if (point && !point.Error) return [point.X - rect.left, point.Y - rect.top];
+      }
       return [];
     };
-    const drawRect = (el, a, b, color, opacity) => {
-      const x = Math.max(0, Math.min(a[0], b[0]));
-      const y = Math.max(0, Math.min(a[1], b[1]));
-      const w = Math.min(width, Math.max(a[0], b[0], x + 1)) - x;
-      const h = Math.min(height, Math.max(a[1], b[1], y + 1)) - y;
+    const drawRect = (el, a, b, color, opacity, minimum = 1) => {
+      const [l, t, r, bot] = minimum ? [0, 0, width, height] : textClip;
+      const x = Math.max(0, l, Math.min(a[0], b[0]));
+      const y = Math.max(0, t, Math.min(a[1], b[1]));
+      const w = Math.min(width, r, Math.max(a[0], b[0], x + minimum)) - x;
+      const h = Math.min(height, bot, Math.max(a[1], b[1], y + minimum)) - y;
       el.hidden = !(w > 0 && h > 0) || Math.max(a[0], b[0]) < 0 || Math.max(a[1], b[1]) < 0;
       if (el.hidden) return;
       el.style.transform = `translate(${left + x}px, ${top + y}px)`;
@@ -363,19 +604,34 @@ function drawCursors(now) {
       el.style.color = color;
       el.style.opacity = opacity;
     };
-    for (const [uid, { el, label, msg, drag, dragEl, selection, selectionEls }] of remoteCursors) {
+    for (const [uid, { el, label, msg, drag, dragEl, selection, selectionEls, text, textEls }] of remoteCursors) {
       const user = presence.users.find((u) => u.uid === uid);
-      if (drag) {
+      if (drag && !text) {
         const { msg: d, fade } = drag;
         const startPage = d.dp === undefined ? d.page : d.dp;
         drawRect(dragEl, project(d.space, startPage, ...d.d), project(d.space, d.page, d.x, d.y),
           user.color, (d.space === 'viewport' ? .72 : 1) * (fade ? (fade - now) / 600 : 1));
-      }
+      } else dragEl.hidden = true;
       if (selection) {
         const { space, page, sel } = selection.msg;
         sel.forEach(([x, y, w, h], i) => {
           drawRect(selectionEls[i], project(space, page, x, y), project(space, page, x + w, y + h),
             user.color, space === 'viewport' ? .72 : 1);
+        });
+      }
+      if (text) {
+        const ts = text.selection;
+        let boxes = [];
+        if (ts.space === file.type) {
+          boxes = ts.space === 'cell' ? cellSelectionBoxes(win, rect, ts) : ts.rects.map(([page, x, y, w, h]) => {
+            if (word && (page < word.m_lDrawingFirst || page > word.m_lDrawingEnd)) return [[], []];
+            return [project(ts.space, page, x, y), project(ts.space, page, x + w, y + h)];
+          });
+        }
+        while (textEls.length > boxes.length) textEls.pop().remove();
+        boxes.forEach(([a, b], i) => {
+          textEls[i] ||= cursorRect('remote-selection', uid);
+          drawRect(textEls[i], a, b, user.color, 1, 0);
         });
       }
       if (msg.x === null) {
@@ -763,7 +1019,10 @@ async function main() {
       const before = presence.users.length;
       presence = m; renderPeople();
       for (const uid of remoteCursors.keys()) if (!m.users.some((u) => u.uid === uid)) removeRemoteCursor(uid);
-      if (before && m.users.length > before) toast(`${m.users[m.users.length - 1].name}님이 들어왔습니다`);
+      if (before && m.users.length > before) {
+        toast(`${m.users[m.users.length - 1].name}님이 들어왔습니다`);
+        updateTextSelection(true);
+      }
       if (file.type === 'hwp' && m.lock === me.uid && m.requests?.length) {
         const who = m.users.find((u) => u.uid === m.requests[0]);
         banner(`${who?.name || '다른 사람'}님이 편집을 요청했습니다.`, '저장하고 넘기기', async () => {
@@ -786,6 +1045,7 @@ async function main() {
       clearTimeout(cursorTimer);
       cursorTimer = 0;
       pendingCursor = pendingRelease = lastCursor = dragStart = undefined;
+      pendingTextSelection = lastTextSelection = undefined;
       for (const uid of remoteCursors.keys()) removeRemoteCursor(uid);
     }
     clearTimeout(connTimer);

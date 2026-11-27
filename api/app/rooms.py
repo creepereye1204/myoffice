@@ -82,7 +82,7 @@ class Rooms:
             elif departed:
                 self._remove(fid, r, uid)
         if departed:
-            await self.broadcast(fid, {"type": "cursor", "uid": uid, "x": None}, exclude=uid)
+            await self.broadcast(fid, {"type": "cursor", "uid": uid, "x": None, "ts": None}, exclude=uid)
         if not keep_lock:
             await self.presence(fid)
 
@@ -154,11 +154,20 @@ class Rooms:
 
     async def cursor(self, fid: str, uid: str, msg: dict) -> bool:
         # 포인터는 검증한 좌표만 전달하고 방 상태에는 남기지 않는다.
+        payload = {}
+        if "ts" in msg:
+            try:
+                payload["ts"] = self._text_selection(msg["ts"])
+            except ValueError:
+                return False
+            msg = {k: v for k, v in msg.items() if k in
+                   {"type", "x", "y", "space", "page", "vx", "vy", "d", "dp", "sel"}}
         x = msg.get("x")
         if x is None:
-            if msg.keys() != {"type", "x"}:
+            if msg.keys() == {"type", "x"}:
+                payload["x"] = None
+            elif msg.keys() != {"type"} or "ts" not in payload:
                 return False
-            payload = {"x": None}
         else:
             y, space = msg.get("y"), msg.get("space")
             if space not in ("hwp", "word", "viewport"):
@@ -177,7 +186,7 @@ class Rooms:
 
             if not coords((x, y), 2):
                 return False
-            payload = {"x": x, "y": y, "space": space}
+            payload.update(x=x, y=y, space=space)
             if "page" in keys:
                 page = msg["page"]
                 if type(page) is not int or not 0 <= page < 100_000:
@@ -207,6 +216,43 @@ class Rooms:
                 payload["sel"] = sel
         await self.broadcast(fid, {"type": "cursor", "uid": uid, **payload}, exclude=uid)
         return True
+
+    @staticmethod
+    def _text_selection(ts):
+        if ts is None:
+            return None
+        if not isinstance(ts, dict):
+            raise ValueError
+
+        def index(value, limit):
+            return type(value) is int and 0 <= value < limit
+
+        space = ts.get("space")
+        if space == "cell":
+            sheet, ranges = ts.get("sheet"), ts.get("ranges")
+            if not index(sheet, 100_000) or not isinstance(ranges, list) or not 0 < len(ranges) <= 20:
+                raise ValueError
+            for row in ranges:
+                if not isinstance(row, list) or len(row) != 4:
+                    raise ValueError
+                r1, c1, r2, c2 = row
+                if not (index(r1, 1_048_576) and index(r2, 1_048_576)
+                        and index(c1, 16_384) and index(c2, 16_384) and r1 <= r2 and c1 <= c2):
+                    raise ValueError
+            return {"space": space, "sheet": sheet, "ranges": ranges}
+
+        rects = ts.get("rects")
+        if space not in ("word", "hwp", "slide") or not isinstance(rects, list) or not 0 < len(rects) <= 40:
+            raise ValueError
+        for rect in rects:
+            if not isinstance(rect, list) or len(rect) != 5:
+                raise ValueError
+            page, x, y, w, h = rect
+            if not (index(page, 100_000)
+                    and all(type(v) in (int, float) and -1_000_000 <= v <= 10_000_000 for v in (x, y))
+                    and all(type(v) in (int, float) and 0 < v <= 10_000_000 for v in (w, h))):
+                raise ValueError
+        return {"space": space, "rects": rects}
 
     async def broadcast(self, fid: str, msg: dict, exclude: str | None = None) -> None:
         r = self.rooms.get(fid)

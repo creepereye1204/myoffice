@@ -1232,7 +1232,7 @@ async def file_socket(sock: WebSocket, fid: str, uid: str = "", name: str = "",
                 await sock.send_json({"type": "pong"})
             elif t == "cursor":
                 now = time.monotonic()
-                # 선택 영역 최대 20개의 좌표를 포함해도 같은 전송 간격을 적용한다.
+                # 포인터와 글자·셀 선택은 같은 전송 간격을 적용한다.
                 if now >= next_cursor and len(raw) <= 4096 and await rooms.cursor(fid, uid, msg):
                     next_cursor = now + 0.04
             elif t == "name":
