@@ -119,4 +119,4 @@ WEB_URL=https://www.<도메인> API_URL=https://api.<도메인> tests/e2e/run.sh
 - API는 처리되지 않은 예외, 5xx 응답, ONLYOFFICE 콜백·변환 실패를 기록합니다. API 응답의 `X-Request-ID`로 브라우저와 서버 로그를 찾을 수 있습니다. 계정 ID는 API가 인증한 경우에만 로그에 남깁니다.
 - 수집기는 오류 진단 필드만 전송합니다. 요청·응답 본문, 문서 내용, 제목, 파일 이름, 파일 ID, 공유 토큰, 이메일, URL 쿼리는 수집 대상에서 제외하며 오류 메시지와 스택에서도 식별 정보를 제거합니다.
 - UTC 일자별 JSONL은 API 컨테이너의 `/data/logs/` (호스트의 `data/logs/`)에 저장됩니다. 파일 이름은 `client-errors-YYYY-MM-DD.jsonl`과 `server-errors-YYYY-MM-DD.jsonl`입니다. Grafana의 `/grafana/`에서 **알오피스 — 에러** 대시보드를 열면 Loki에 수집된 오류 추이와 최근 로그를 볼 수 있습니다. 로그 보존 기간은 30일입니다.
-- 저장된 로그 요약은 저장소에서 `python3 tools/errors_report.py --days 7`로 확인합니다. 다른 디렉터리는 `--log-dir`로 지정합니다.
+- 저장된 로그 요약은 저장소에서 `python3 tools/errors_report.py --days 7`로 확인합니다. 다른 디렉터리는 `--log-dir`로 지정합니다. 자동 테스트가 남긴 기록은 기본으로 빠지며, 함께 보려면 `--include-tests`를 붙입니다.
