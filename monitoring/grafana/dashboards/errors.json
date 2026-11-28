@@ -1,0 +1,154 @@
+{
+  "uid": "myoffice-errors",
+  "title": "알오피스 — 에러",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "kind",
+        "label": "오류 종류",
+        "type": "custom",
+        "query": "js,promise,api,toast,editor,server,onlyoffice_callback,conversion",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "page",
+        "label": "페이지",
+        "type": "custom",
+        "query": "home,edit,login,admin",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "시간대별 오류 건수",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "myoffice-loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "myoffice-loki"
+          },
+          "expr": "sum by (logger, kind) (count_over_time({logger=~\"myoffice[.](client_error|server_error)\",kind=~\"${kind:regex}\"} | json | page=~\"${page:regex}\" | __error__=\"\" | keep logger, kind [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{logger}} / {{kind}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "최근 오류 로그",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "myoffice-loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "myoffice-loki"
+          },
+          "expr": "{logger=~\"myoffice[.](client_error|server_error)\",kind=~\"${kind:regex}\"} | json | page=~\"${page:regex}\" | __error__=\"\"",
+          "queryType": "range",
+          "maxLines": 100
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 3,
+      "title": "자주 발생한 오류 메시지",
+      "type": "table",
+      "datasource": {
+        "type": "loki",
+        "uid": "myoffice-loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "myoffice-loki"
+          },
+          "expr": "topk(10, sum by (message) (count_over_time({logger=~\"myoffice[.](client_error|server_error)\",kind=~\"${kind:regex}\"} | json | page=~\"${page:regex}\" | __error__=\"\" | keep message [$__range])))",
+          "queryType": "instant"
+        }
+      ],
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "건수",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {"mode": "columns"}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "message": "메시지",
+              "Value": "건수"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

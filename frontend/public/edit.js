@@ -10,7 +10,11 @@ let me = getUser();
 function setStatus(text, kind = '') { const s = $('#status'); s.textContent = text; s.className = `status ${kind}`; }
 function setLoading(msg) { const m = $('#loading-msg'); if (m) m.textContent = msg; }
 function doneLoading() { $('#loading')?.remove(); }
-function fail(msg) { setLoading(msg); $('.loading .bar')?.remove(); }
+function fail(msg, error) {
+  window.reportClientError?.('editor', msg, error?.stack);
+  setLoading(msg);
+  $('.loading .bar')?.remove();
+}
 function banner(msg, btn, onClick) {
   $('#banner').hidden = !msg;
   $('#banner-msg').textContent = msg || '';
@@ -305,7 +309,15 @@ async function openOnlyOffice() {
       if (!ooPending) ooFlushed.splice(0).forEach((r) => r());
       if (config.editorConfig.mode === 'edit' && !ooSaving) setStatus(e.data ? '수정 중…' : '자동 저장됨', e.data ? '' : 'ok');
     },
-    onError: (e) => { doneLoading(); toast(`편집기 오류: ${e.data?.errorDescription || e.data?.errorCode}`, 'err'); },
+    onError: (e) => {
+      const { errorCode, errorDescription } = e.data || {};
+      const message = `편집기 오류: ${errorDescription || errorCode}`;
+      window.reportClientError?.('editor', message, '', {
+        errorCode: Number.isSafeInteger(Number(errorCode)) ? Number(errorCode) : undefined,
+      });
+      doneLoading();
+      toast(message, 'err');
+    },
   };
   setTimeout(doneLoading, 60000);
   // eslint-disable-next-line no-undef
@@ -427,6 +439,7 @@ async function saveHwp(manual = false) {
     setStatus(`${manual ? '저장됨' : '자동 저장됨'} · ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`, 'ok');
     if (manual) toast('저장했습니다', 'ok');
   } catch (e) {
+    window.reportClientError?.('editor', `저장 실패: ${e.message}`, e.stack);
     setStatus('저장 실패', 'err');
     toast(e.message, 'err');
     if (e.status === 409) await reloadHwp();
@@ -584,7 +597,7 @@ async function main() {
     }
     if (!id) { location.href = '/'; return; }
     file = await api(`/api/files/${id}`);
-  } catch (e) { fail(`파일을 열 수 없습니다: ${e.message}`); return; }
+  } catch (e) { fail(`파일을 열 수 없습니다: ${e.message}`, e); return; }
 
   await askName();
   document.title = `${file.name} — 알오피스`;
@@ -662,7 +675,7 @@ async function main() {
   try {
     if (file.type === 'hwp') await openHwp();
     else await openOnlyOffice();
-  } catch (e) { fail(e.message || '편집기를 불러오지 못했습니다'); }
+  } catch (e) { fail(e.message || '편집기를 불러오지 못했습니다', e); }
 }
 
 // 검사용 (브라우저 E2E)

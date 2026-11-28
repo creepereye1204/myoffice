@@ -67,7 +67,7 @@ async function upload(list) {
     fd.append('file', file);
     toast(`${file.name} 올리는 중…`);
     try { await api('/api/files/upload', { method: 'POST', body: fd }); toast(`${file.name} 업로드 완료`, 'ok'); }
-    catch (e) { toast(`${file.name}: ${e.message}`, 'err'); }
+    catch (e) { toast(`${file.name}: ${e.message}`, 'err', [file.name, file.name.replace(/\.[^.]+$/, '')]); }
   }
   if (scope !== 'mine') setScope('mine'); else load();
 }

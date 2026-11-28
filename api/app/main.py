@@ -24,13 +24,18 @@ from urllib.parse import quote, urlsplit
 import httpx
 import jwt
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import Counter, Histogram, start_http_server
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import MutableHeaders
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from .error_logs import CLIENT_BATCH, ErrorLogs, RequestErrors, remember_document
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+error_logs = ErrorLogs(DATA_DIR / "logs")
 TEMPLATE_DIR = Path(os.environ.get("TEMPLATE_DIR", "/app/templates"))
 JWT_SECRET = os.environ["JWT_SECRET"]
 SIGN_SECRET = os.environ["SIGN_SECRET"].encode()
@@ -197,24 +202,26 @@ async def lifespan(_app):
     import asyncio
     # 재시작 시 이전 리스너를 닫아 같은 포트를 다시 쓸 수 있게 한다.
     server, _ = start_http_server(9000)
+    await asyncio.to_thread(error_logs.prune)
     task = asyncio.create_task(autosave_loop())
+    prune_task = asyncio.create_task(error_logs.prune_daily())
     try:
         yield
     finally:
         task.cancel()
+        prune_task.cancel()
         server.shutdown()
         server.server_close()
 
 
 app = FastAPI(lifespan=lifespan, title="rhwp office API", docs_url=None, redoc_url=None, openapi_url=None)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "X-Share", "X-Client", "X-Base-Version", "Content-Type"],
-    expose_headers=["Content-Disposition", "X-File-Version"],
-    max_age=600,
-)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def track_http_exception(request: Request, exc: StarletteHTTPException):
+    if exc.status_code >= 500:
+        request.state.error_log_http_exception = exc
+    return await http_exception_handler(request, exc)
 
 
 # ---------------------------------------------------------------- helpers
@@ -253,7 +260,9 @@ def read_meta(ws: str, fid: str) -> dict:
     p = file_dir(ws, fid) / "meta.json"
     if not p.exists():
         raise HTTPException(404, "not found")
-    return json.loads(p.read_text())
+    meta = json.loads(p.read_text())
+    remember_document(meta)
+    return meta
 
 
 def write_meta(ws: str, meta: dict) -> None:
@@ -350,15 +359,17 @@ def bearer(authorization: Optional[str]) -> Optional[str]:
     return authorization[7:] if authorization and authorization.startswith("Bearer ") else None
 
 
-def current_user(authorization: Optional[str] = Header(None)) -> dict:
+def optional_user(request: Request, authorization: Optional[str] = Header(None)) -> Optional[dict]:
     u = accounts.session_user(bearer(authorization))
-    if not u:
-        raise HTTPException(401, "로그인이 필요합니다")
+    if u:
+        request.state.error_log_uid = u["id"]
     return u
 
 
-def optional_user(authorization: Optional[str] = Header(None)) -> Optional[dict]:
-    return accounts.session_user(bearer(authorization))
+def current_user(u: Optional[dict] = Depends(optional_user)) -> dict:
+    if not u:
+        raise HTTPException(401, "로그인이 필요합니다")
+    return u
 
 
 def admin_user(u: dict = Depends(current_user)) -> dict:
@@ -471,6 +482,42 @@ def too_many(key: str, limit: int = 10, window: int = 600) -> bool:
     lst = [t for t in _fails.get(key, []) if now - t < window]
     _fails[key] = lst
     return len(lst) >= limit
+
+
+_client_error_window = -1
+
+
+@app.post("/api/client-errors", status_code=204)
+async def collect_client_errors(request: Request):
+    global _client_error_window
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type not in {"text/plain", "application/json"}:
+        raise HTTPException(415, "unsupported media type")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 64 * 1024:
+            raise HTTPException(413, "payload too large")
+        body.extend(chunk)
+    try:
+        items = CLIENT_BATCH.validate_json(body)
+    except ValidationError:
+        raise HTTPException(422, "invalid error records") from None
+
+    # 만료된 IP 항목을 주기적으로 제거하고 한 배치의 레코드 수로 제한한다.
+    now = time.time()
+    window = int(now // 600)
+    if _client_error_window != window:
+        _client_error_window = window
+        for key, timestamps in _fails.copy().items():
+            if key.startswith("client-errors:") and (not timestamps or now - timestamps[-1] >= 600):
+                _fails.pop(key, None)
+    key = f"client-errors:{client_ip(request)}"
+    if too_many(key, limit=61 - len(items)):
+        raise HTTPException(429, "too many error records")
+    _fails[key].extend([now] * len(items))
+    user = optional_user(request, request.headers.get("authorization"))
+    error_logs.client(items, user["id"] if user else None)
+    return Response(status_code=204)
 
 
 def me_out(u: dict) -> dict:
@@ -775,8 +822,11 @@ def resolve_access(fid: str, user: Optional[dict], share_token: Optional[str]) -
     raise HTTPException(401, "로그인이 필요합니다")
 
 
-def access(fid: str, authorization: Optional[str] = Header(None), x_share: Optional[str] = Header(None)) -> Access:
-    return resolve_access(fid, accounts.session_user(bearer(authorization)), x_share)
+def access(fid: str, request: Request, u: Optional[dict] = Depends(optional_user),
+           x_share: Optional[str] = Header(None)) -> Access:
+    a = resolve_access(fid, u, x_share)
+    request.state.log_private_values.extend((a.fid, a.ws))
+    return a
 
 
 def owner(a: Access = Depends(access)) -> Access:
@@ -1045,13 +1095,17 @@ async def oo_callback(ws: str, fid: str, sig: str, request: Request):
         active_docs[key] = time.time()
     elif key and status in (2, 3, 4):
         active_docs.pop(key, None)
+    if status in (3, 7):
+        error_logs.server(request.scope, 200, message=f"ONLYOFFICE 저장 콜백 오류 ({status})")
     if status in (2, 6):  # 2: 편집 종료 후 저장, 6: 강제 저장
         try:
             meta = read_meta(ws, fid)
         except HTTPException:  # 편집 중에 파일(또는 계정)이 지워졌으면 저장할 곳이 없다 → 정상 처리
             return {"error": 0}
+        request.state.log_private_values.extend((fid, ws, sig))
         url = payload.get("url")
         if not url:
+            error_logs.server(request.scope, 200, message="ONLYOFFICE 저장 결과 주소 없음")
             return {"error": 1}
         async with httpx.AsyncClient(timeout=120) as c:
             r = None
@@ -1063,6 +1117,7 @@ async def oo_callback(ws: str, fid: str, sig: str, request: Request):
                 except httpx.HTTPError:
                     r = None
             if r is None or r.status_code != 200:
+                error_logs.server(request.scope, 200, message="ONLYOFFICE 저장 결과 다운로드 실패")
                 return {"error": 1}
         new_ext = (payload.get("filetype") or meta["ext"]).lower()
         if new_ext != meta["ext"] and new_ext in ALLOWED:
@@ -1246,5 +1301,13 @@ async def file_socket(sock: WebSocket, fid: str, uid: str = "", name: str = "",
         await rooms.leave(fid, uid, sock, grace=grace)
 
 
-# FastAPI가 생성하는 서버 오류 응답도 함께 계측한다.
-app = HTTPMetrics(app)
+# FastAPI가 생성하는 서버 오류 응답에도 CORS와 요청 ID를 적용하고 계측한다.
+app = CORSMiddleware(
+    app,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "X-Share", "X-Client", "X-Base-Version", "Content-Type", "X-Request-ID"],
+    expose_headers=["Content-Disposition", "X-File-Version", "X-Request-ID"],
+    max_age=600,
+)
+app = HTTPMetrics(RequestErrors(app, error_logs))

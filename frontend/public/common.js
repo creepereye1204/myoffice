@@ -52,6 +52,28 @@ export function setUserName(name) {
   return u;
 }
 
+function reportApiError(path, method, status, message, requestId) {
+  if (!window.reportClientError) return;
+  // 알려진 경로만 기록하고 파일·계정·공유 링크 값은 템플릿으로 바꾼다.
+  const [pathname, query] = path.split(/[?#]/, 2);
+  const privateValues = [SHARE, ...new URLSearchParams(query).values()];
+  const route = pathname
+    .replace(/^(\/api\/files\/)(?!new$|upload$)([^/]+)/, (_, prefix, id) => {
+      privateValues.push(id);
+      return prefix + '{id}';
+    })
+    .replace(/^(\/api\/(?:shared|admin\/users|files\/\{id\}\/grants)\/)([^/]+)$/, (_, prefix, id) => {
+      privateValues.push(id);
+      return prefix + '{id}';
+    });
+  const known = /^\/api\/(?:auth\/(?:config|login|logout|me|password|signup)|admin\/(?:settings|users(?:\/\{id\})?)|files(?:\/(?:new|upload|\{id\}(?:\/(?:content|convert|download-link|export|grants(?:\/\{id\})?|onlyoffice|save|share))?))?|shared\/\{id\}|shared-with-me|workspaces\/me|health)$/;
+  window.reportClientError('api', message, '', {
+    method: /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)$/.test(method) ? method : 'OTHER',
+    route: known.test(route) ? route : 'other', status,
+    request_id: /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(requestId || '') ? requestId : undefined,
+  }, privateValues);
+}
+
 export async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   const t = getToken();
@@ -65,16 +87,20 @@ export async function api(path, opts = {}) {
   // timeout(ms) 지정 시 응답이 없으면 끊는다 (저장이 영원히 '저장 중'에 걸리지 않게)
   const ctrl = opts.timeout ? new AbortController() : null;
   const timer = ctrl && setTimeout(() => ctrl.abort(), opts.timeout);
+  const method = String(opts.method || 'GET').toUpperCase();
   let r;
   try {
     r = await fetch(`${API_BASE}${path}`, { ...opts, headers, body, signal: ctrl?.signal || opts.signal });
   } catch (e) {
     const err = new Error(e.name === 'AbortError' ? '서버 응답이 없습니다. 잠시 후 다시 저장합니다' : '네트워크 연결을 확인하세요');
-    err.status = 0; throw err;
+    err.status = 0;
+    reportApiError(path, method, 0, err.message);
+    throw err;
   } finally { if (timer) clearTimeout(timer); }
   if (!r.ok) {
     let msg = `요청 실패 (${r.status})`;
     try { const j = await r.json(); if (j.detail) msg = typeof j.detail === 'string' ? j.detail : msg; } catch {}
+    if (r.status >= 500) reportApiError(path, method, r.status, msg, r.headers.get('X-Request-ID'));
     const err = new Error(msg); err.status = r.status;
     throw err;
   }
@@ -128,7 +154,8 @@ export function fileIcon(type, ext) {
   return `<span class="ficon" style="--c:${t.color}" aria-hidden="true"><b>${t.short}</b><i>${ext.toUpperCase()}</i></span>`;
 }
 
-export function toast(msg, kind = '') {
+export function toast(msg, kind = '', privateValues = []) {
+  if (kind === 'err') window.reportClientError?.('toast', msg, '', {}, [SHARE, ...privateValues]);
   let box = document.getElementById('toasts');
   if (!box) { box = document.createElement('div'); box.id = 'toasts'; document.body.appendChild(box); }
   const el = document.createElement('div');
