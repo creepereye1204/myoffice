@@ -43,7 +43,7 @@ class Group:
             self.request_id = request_id
 
 
-def summarize(log_dir, days):
+def summarize(log_dir, days, include_tests=False):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
     groups = {}
@@ -61,7 +61,8 @@ def summarize(log_dir, days):
                     record = json.loads(line)
                     if not isinstance(record, dict):
                         raise ValueError("레코드 형식 오류")
-                    ts = datetime.fromisoformat(record["ts"])
+                    # Python 3.10 이하의 fromisoformat 은 끝의 Z 를 못 읽는다
+                    ts = datetime.fromisoformat(str(record["ts"]).replace("Z", "+00:00"))
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
                     kind = record["kind"]
@@ -74,6 +75,9 @@ def summarize(log_dir, days):
                     skipped += 1
                     continue
                 if not cutoff <= ts <= now:
+                    continue
+                # 자동 테스트(API_TEST_ERROR, E2E_TEST_ERROR)가 남긴 기록은 기본으로 뺀다
+                if not include_tests and "_TEST_ERROR" in message:
                     continue
                 if frames:
                     top = frames[-1] if record.get("traceback") else frames[0]
@@ -92,10 +96,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=7, help="조회할 최근 일수 (기본 7일)")
     parser.add_argument("--log-dir", type=Path, default=LOG_DIR, help="JSONL 파일이 있는 디렉터리")
+    parser.add_argument("--include-tests", action="store_true", help="자동 테스트가 남긴 기록도 포함")
     args = parser.parse_args()
     if args.days < 1:
         parser.error("--days는 1 이상이어야 합니다.")
-    groups, skipped = summarize(args.log_dir, args.days)
+    groups, skipped = summarize(args.log_dir, args.days, args.include_tests)
     total = sum(group.count for group in groups.values())
     print(f"최근 {args.days}일 오류 {total}건, {len(groups)}개 그룹 (UTC)")
     if skipped:
