@@ -56,8 +56,95 @@ $('#signup').addEventListener('change', async (e) => {
   catch (er) { toast(er.message, 'err'); e.target.checked = !e.target.checked; }
 });
 
+const feedbackKinds = { bug: '버그', suggestion: '제안', other: '기타' };
+const feedbackStatuses = { new: '새 의견', read: '읽음', done: '처리 완료' };
+const feedbackLimit = 25;
+let feedbackOffset = 0;
+let feedbackRequest = 0;
+
+function feedbackRow(item) {
+  const row = document.createElement('tr');
+  for (const value of [
+    feedbackKinds[item.kind], item.message, item.email,
+    [item.page, item.file_type].filter(Boolean).join(' / '), fmtTime(item.created_at), item.session_id,
+  ]) {
+    row.insertCell().textContent = value || '—';
+  }
+  const message = row.cells[1];
+  message.className = 'feedback-message';
+  const errors = JSON.parse(item.errors_json);
+  if (errors.length || item.ua || item.screen || item.build) {
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = '환경 및 오류 기록';
+    details.append(summary);
+    for (const line of [
+      item.ua && `브라우저 ${item.ua}`, item.screen && `화면 ${item.screen}`,
+      item.build && `빌드 ${item.build}`, ...errors.map((error) => `[${error.kind}] ${error.message}`),
+    ].filter(Boolean)) {
+      const entry = document.createElement('div');
+      entry.textContent = line;
+      details.append(entry);
+    }
+    message.append(details);
+  }
+  const select = document.createElement('select');
+  select.setAttribute('aria-label', '의견 상태');
+  for (const [value, label] of Object.entries(feedbackStatuses)) select.add(new Option(label, value));
+  select.value = item.status;
+  select.addEventListener('change', async () => {
+    select.disabled = true;
+    try {
+      await api(`/api/admin/feedback/${item.id}`, { method: 'PATCH', body: { status: select.value } });
+      item.status = select.value;
+      await loadFeedback();
+    } catch (e) {
+      select.value = item.status;
+      toast(e.message, 'err');
+    } finally { select.disabled = false; }
+  });
+  row.insertCell().append(select);
+  return row;
+}
+
+async function loadFeedback() {
+  const request = ++feedbackRequest;
+  const query = new URLSearchParams({ limit: feedbackLimit, offset: feedbackOffset });
+  for (const key of ['status', 'kind']) {
+    const value = $(`#feedback-${key}`).value;
+    if (value) query.set(key, value);
+  }
+  const { items, total, unread } = await api(`/api/admin/feedback?${query}`);
+  if (request !== feedbackRequest) return;
+  if (feedbackOffset && feedbackOffset >= total) {
+    feedbackOffset = Math.max(0, Math.floor((total - 1) / feedbackLimit) * feedbackLimit);
+    return loadFeedback();
+  }
+  $('#feedback-rows').replaceChildren(...items.map(feedbackRow));
+  $('#feedback-unread').textContent = `새 의견 ${unread}건`;
+  $('#feedback-unread').hidden = false;
+  $('#feedback-range').textContent = total ? `${feedbackOffset + 1}–${feedbackOffset + items.length} / ${total}건` : '의견이 없습니다';
+  $('#feedback-prev').disabled = feedbackOffset === 0;
+  $('#feedback-next').disabled = feedbackOffset + items.length >= total;
+}
+
+function showFeedback(offset) {
+  feedbackOffset = offset;
+  $('#feedback-prev').disabled = $('#feedback-next').disabled = true;
+  loadFeedback().catch((e) => {
+    $('#feedback-prev').disabled = feedbackOffset === 0;
+    toast(e.message, 'err');
+  });
+}
+
 (async () => {
   me = await requireLogin();
   if (!me.isAdmin) { location.replace('/'); return; }
   load().catch((er) => toast(er.message, 'err'));
+  for (const key of ['status', 'kind']) {
+    $(`#feedback-${key}`).addEventListener('change', () => showFeedback(0));
+  }
+  $('#feedback-prev').addEventListener('click', () => showFeedback(feedbackOffset - feedbackLimit));
+  $('#feedback-next').addEventListener('click', () => showFeedback(feedbackOffset + feedbackLimit));
+  showFeedback(0);
 })();

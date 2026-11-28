@@ -26,6 +26,7 @@ class Group:
     builds: set = field(default_factory=set)
     sample_stack: str = ""
     request_id: str = ""
+    session_id: str = ""
 
     def add(self, ts, record, stack):
         self.count += 1
@@ -36,11 +37,14 @@ class Group:
             if isinstance(value, str) and value:
                 values.add(value)
         request_id = record.get("request_id") or ""
+        session_id = record.get("sessionId") or ""
         if (stack and not self.sample_stack) or (stack and request_id and not self.request_id):
             self.sample_stack = stack
             self.request_id = request_id
-        elif not self.sample_stack and not self.request_id:
+            self.session_id = session_id
+        elif not self.sample_stack and not (self.request_id or self.session_id):
             self.request_id = request_id
+            self.session_id = session_id
 
 
 def summarize(log_dir, days, include_tests=False):
@@ -111,6 +115,7 @@ def main():
         print(f"  페이지 {', '.join(sorted(group.pages)) or '없음'} / 파일 형식 {', '.join(sorted(group.file_types)) or '없음'}")
         print(f"  빌드 {', '.join(sorted(group.builds)) or '없음'}")
         print(f"  첫 오류 프레임 {top or '없음'} / 요청 ID {group.request_id or '없음'}")
+        print(f"  예시 세션 ID {group.session_id or '없음'}")
         if group.sample_stack:
             print("  예시 스택")
             print("\n".join(f"    {frame}" for frame in group.sample_stack.splitlines()))

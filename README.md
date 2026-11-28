@@ -120,3 +120,9 @@ WEB_URL=https://www.<도메인> API_URL=https://api.<도메인> tests/e2e/run.sh
 - 수집기는 오류 진단 필드만 전송합니다. 요청·응답 본문, 문서 내용, 제목, 파일 이름, 파일 ID, 공유 토큰, 이메일, URL 쿼리는 수집 대상에서 제외하며 오류 메시지와 스택에서도 식별 정보를 제거합니다.
 - UTC 일자별 JSONL은 API 컨테이너의 `/data/logs/` (호스트의 `data/logs/`)에 저장됩니다. 파일 이름은 `client-errors-YYYY-MM-DD.jsonl`과 `server-errors-YYYY-MM-DD.jsonl`입니다. Grafana의 `/grafana/`에서 **알오피스 — 에러** 대시보드를 열면 Loki에 수집된 오류 추이와 최근 로그를 볼 수 있습니다. 로그 보존 기간은 30일입니다.
 - 저장된 로그 요약은 저장소에서 `python3 tools/errors_report.py --days 7`로 확인합니다. 다른 디렉터리는 `--log-dir`로 지정합니다. 자동 테스트가 남긴 기록은 기본으로 빠지며, 함께 보려면 `--include-tests`를 붙입니다.
+
+## 의견 보내기
+
+홈 상단과 편집기 상단의 **의견 보내기**에서 버그, 제안, 기타 의견을 보낼 수 있습니다. 공유 링크로 편집기를 연 손님도 이용할 수 있습니다. 답장용 이메일과 최근 오류 요약 첨부는 선택입니다. 전송할 환경 정보는 대화상자 하단에 표시됩니다.
+
+관리자는 `/admin`의 **의견**에서 접수 내역을 확인하고 상태를 바꿀 수 있습니다. 오류를 첨부한 의견의 세션 ID는 `data/logs/`의 `sessionId`와 대조할 수 있습니다. 서버에서는 `python3 tools/feedback_report.py --days 7 --status new`로 최근 새 의견을 조회할 수 있습니다.

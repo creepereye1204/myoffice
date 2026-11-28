@@ -21,6 +21,10 @@
     <span id="status" class="status"></span>
     <div class="grow"></div>
     <div id="people" class="people" aria-label="접속자"></div>
+    <button class="btn feedback-trigger" id="feedback-open" type="button" title="의견 보내기" aria-label="의견 보내기" data-page="edit">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-6 4V6a2 2 0 0 1 2-2Zm0 2v12.3L7.4 16H20V6H4Zm2 3h12v2H6V9Zm0 4h8v1H6v-1Z"/></svg>
+      <span>의견 보내기</span>
+    </button>
     <button class="btn" id="share" hidden>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5a3 3 0 1 1 .8 2l-7 3.6a3 3 0 0 1 0 2.8l7 3.6a3 3 0 1 1-.9 1.8l-7-3.6a3 3 0 1 1 0-4.4l7-3.6A3 3 0 0 1 16 5Z"/></svg>
       <span>공유</span>
@@ -79,6 +83,7 @@
     </form>
   </dialog>
 
+  <script type="module" src="/feedback.js"></script>
   <script type="module" src="/edit.js"></script>
 </body>
 </html>

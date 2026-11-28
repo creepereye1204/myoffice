@@ -21,6 +21,10 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 0 4.2 12.6l4.1 4.1 1.4-1.4-4.1-4.1A7 7 0 0 0 11 4Zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10Z"/></svg>
       <input id="q" type="search" placeholder="파일 검색" autocomplete="off" />
     </div>
+    <button class="btn feedback-trigger" id="feedback-open" type="button" title="의견 보내기" aria-label="의견 보내기" data-page="home">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-6 4V6a2 2 0 0 1 2-2Zm0 2v12.3L7.4 16H20V6H4Zm2 3h12v2H6V9Zm0 4h8v1H6v-1Z"/></svg>
+      <span>의견 보내기</span>
+    </button>
     <div class="account">
       <button class="account-btn" id="account-btn" aria-haspopup="menu">
         <span class="avatar small" id="me-avatar"></span><span id="me-name"></span>
@@ -114,6 +118,7 @@
     </form>
   </dialog>
 
+  <script type="module" src="/feedback.js"></script>
   <script type="module" src="/home.js"></script>
 </body>
 </html>

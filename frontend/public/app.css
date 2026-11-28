@@ -142,7 +142,7 @@ dialog input { width: 100%; padding: 9px 12px; border: 1px solid var(--line); bo
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
 /* ---------- 토스트 */
-#toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 100; display: grid; gap: 8px; justify-items: center; }
+.toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 100; display: grid; gap: 8px; justify-items: center; }
 .toast { background: #1f2329; color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 14px; box-shadow: var(--shadow); transition: opacity .4s, transform .4s; max-width: calc(100vw - 32px); }
 .toast.err { background: var(--danger); color: #fff; }
 .toast.ok { background: var(--ok); color: #fff; }
@@ -267,3 +267,24 @@ dialog select { padding: 8px; border: 1px solid var(--line); border-radius: 8px;
 .search { min-width: 0; }
 .account { flex: none; }
 @media (max-width: 760px) { .search { margin: 0; } .account-btn svg { display: none; } }
+
+/* 의견 보내기 */
+.feedback-trigger { flex: 0 0 auto; padding: 6px 9px; white-space: nowrap; }
+#feedback-dialog form { display: grid; gap: 12px; }
+#feedback-dialog input:is([type="radio"], [type="checkbox"]) { width: auto; }
+.feedback-kinds { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; padding: 0; border: 0; }
+.feedback-kinds legend { margin-bottom: 4px; }
+.feedback-field { display: grid; gap: 4px; }
+.feedback-field textarea { width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; resize: vertical; }
+.feedback-count { margin-top: -8px; text-align: right; }
+#feedback-dialog .feedback-context, .feedback-count { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+#feedback-dialog .feedback-context, #feedback-dialog .actions { margin: 0; }
+#feedback-dialog .toasts { width: max-content; max-width: calc(100vw - 32px); }
+.feedback-admin-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
+.feedback-admin-table td { vertical-align: top; overflow-wrap: anywhere; }
+.feedback-admin-table .feedback-message { min-width: 16rem; white-space: pre-wrap; }
+.feedback-admin-table details { margin-top: 8px; white-space: normal; }
+
+@media (max-width: 700px) {
+  .feedback-trigger span { display: none; }
+}

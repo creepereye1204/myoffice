@@ -8,6 +8,7 @@
   const fileTypes = ['word', 'cell', 'slide', 'hwp', 'pdf'];
   const seen = new Set();
   const pending = [];
+  const recent = [];
   const encoder = new TextEncoder();
 
   function scrub(value, limit, privateValues) {
@@ -37,7 +38,7 @@
       const file = window.__edit?.file;
       const params = new URLSearchParams(location.search);
       const secrets = [...privateValues, file?.name, file?.name?.replace(/\.[^.]+$/, ''),
-        file?.share?.token, params.get('s'), params.get('id')];
+        file?.id, file?.share?.token, params.get('s'), params.get('id')];
       const cleanMessage = scrub(message, 500, secrets) || '오류 메시지 없음';
       // 스택 첫 줄은 보통 메시지의 반복이다. 실제 프레임만 보낸다.
       const frames = typeof stack === 'string' ? stack.split('\n').filter((line) =>
@@ -55,6 +56,8 @@
         if (localStorage.getItem('rhwp.token') && Number.isSafeInteger(id) && id > 0) uid = id;
       } catch {}
       seen.add(key);
+      recent.push({ kind, message: cleanMessage });
+      if (recent.length > 5) recent.shift();
       pending.push({
         ts: new Date().toISOString(), kind, message: cleanMessage, stack: cleanStack, page,
         fileType: fileTypes.includes(file?.type) ? file.type : undefined,
@@ -83,6 +86,10 @@
     }
   }
 
+  // 전송 대기열과 별도로 최근 요약만 보관하고 복사본을 반환한다.
+  Object.defineProperty(window, 'getRecentClientErrors', {
+    value: () => ({ sessionId, errors: recent.map((item) => ({ ...item })) }),
+  });
   window.reportClientError = report;
   window.addEventListener('error', (event) => {
     const filename = event.filename?.split(/[?#]/, 1)[0].split(/[/\\]/).pop();

@@ -25,6 +25,30 @@
         <tbody id="users"></tbody>
       </table>
     </div>
+    <section aria-labelledby="feedback-heading">
+      <h2 id="feedback-heading">의견 <span class="tag" id="feedback-unread" hidden></span></h2>
+      <div class="feedback-admin-controls">
+        <label>상태 <select id="feedback-status">
+          <option value="">전체</option><option value="new">새 의견</option>
+          <option value="read">읽음</option><option value="done">처리 완료</option>
+        </select></label>
+        <label>종류 <select id="feedback-kind">
+          <option value="">전체</option><option value="bug">버그</option>
+          <option value="suggestion">제안</option><option value="other">기타</option>
+        </select></label>
+      </div>
+      <div class="table-wrap">
+        <table class="admin-table feedback-admin-table">
+          <thead><tr><th>종류</th><th>내용</th><th>이메일</th><th>페이지 / 파일 형식</th><th>시각</th><th>세션 ID</th><th>상태</th></tr></thead>
+          <tbody id="feedback-rows"></tbody>
+        </table>
+      </div>
+      <div class="feedback-admin-controls">
+        <button class="btn" id="feedback-prev" disabled>이전</button>
+        <span id="feedback-range" aria-live="polite"></span>
+        <button class="btn" id="feedback-next" disabled>다음</button>
+      </div>
+    </section>
   </main>
   <script type="module" src="/admin.js"></script>
 </body>

@@ -74,11 +74,11 @@ function reportApiError(path, method, status, message, requestId) {
   }, privateValues);
 }
 
-export async function api(path, opts = {}) {
+export async function api(path, { includeShare = true, ...opts } = {}) {
   const headers = { ...(opts.headers || {}) };
   const t = getToken();
   if (t) headers.Authorization = `Bearer ${t}`;
-  if (SHARE) headers['X-Share'] = SHARE;
+  if (includeShare && SHARE) headers['X-Share'] = SHARE;
   let body = opts.body;
   if (body && !(body instanceof FormData) && !(body instanceof Uint8Array) && !(body instanceof Blob) && typeof body === 'object') {
     headers['Content-Type'] = 'application/json';
@@ -154,10 +154,16 @@ export function fileIcon(type, ext) {
   return `<span class="ficon" style="--c:${t.color}" aria-hidden="true"><b>${t.short}</b><i>${ext.toUpperCase()}</i></span>`;
 }
 
-export function toast(msg, kind = '', privateValues = []) {
+export function toast(msg, kind = '', privateValues = [], container = document.body) {
   if (kind === 'err') window.reportClientError?.('toast', msg, '', {}, [SHARE, ...privateValues]);
-  let box = document.getElementById('toasts');
-  if (!box) { box = document.createElement('div'); box.id = 'toasts'; document.body.appendChild(box); }
+  let box = container.querySelector(':scope > .toasts');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'toasts';
+    box.setAttribute('aria-live', 'polite');
+    if (container === document.body) box.id = 'toasts';
+    container.appendChild(box);
+  }
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
   el.textContent = msg;

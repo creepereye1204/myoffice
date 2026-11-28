@@ -61,6 +61,23 @@ class Accounts:
               PRIMARY KEY (fid, user_id)
             );
             CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS feedback (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at INTEGER NOT NULL,
+              user_id INTEGER,
+              kind TEXT NOT NULL CHECK (kind IN ('bug','suggestion','other')),
+              message TEXT NOT NULL,
+              email TEXT,
+              page TEXT NOT NULL,
+              file_type TEXT,
+              ua TEXT,
+              screen TEXT,
+              build TEXT,
+              session_id TEXT,
+              errors_json TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','read','done'))
+            );
+            CREATE INDEX IF NOT EXISTS feedback_status_id ON feedback(status, id);
             """)
             self.db.execute("PRAGMA foreign_keys=ON")
 
@@ -72,6 +89,38 @@ class Accounts:
     def _one(self, sql: str, args: tuple = ()):
         rows = self._q(sql, args)
         return rows[0] if rows else None
+
+    # ------------------------------------------------------------ 의견
+    def add_feedback(self, fields: tuple) -> int:
+        with self.mu:
+            return self.db.execute(
+                """INSERT INTO feedback
+                   (created_at,user_id,kind,message,email,page,file_type,ua,screen,build,session_id,errors_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (int(time.time()), *fields)).lastrowid
+
+    def list_feedback(self, status, kind, limit: int, offset: int) -> dict:
+        filters, args = [], []
+        if status:
+            filters.append("status=?")
+            args.append(status)
+        if kind:
+            filters.append("kind=?")
+            args.append(kind)
+        where = " WHERE " + " AND ".join(filters) if filters else ""
+        with self.mu:
+            rows = self._q(f"SELECT * FROM feedback{where} ORDER BY id DESC LIMIT ? OFFSET ?", (*args, limit, offset))
+            total = self._one(f"SELECT COUNT(*) FROM feedback{where}", tuple(args))[0]
+            unread = self._one("SELECT COUNT(*) FROM feedback WHERE status='new'")[0]
+        return {"items": [dict(row) for row in rows], "total": total, "unread": unread}
+
+    def update_feedback(self, fid: int, status: str) -> bool:
+        with self.mu:
+            return self.db.execute("UPDATE feedback SET status=? WHERE id=?", (status, fid)).rowcount > 0
+
+    def delete_feedback(self, fid: int) -> bool:
+        with self.mu:
+            return self.db.execute("DELETE FROM feedback WHERE id=?", (fid,)).rowcount > 0
 
     # ------------------------------------------------------------ users
     def create_user(self, username: str, password: str, name: str, is_admin: bool = False) -> dict:

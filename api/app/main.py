@@ -23,7 +23,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .error_logs import CLIENT_BATCH, ErrorLogs, RequestErrors, remember_document
+from .error_logs import CLIENT_BATCH, ErrorLogs, RequestErrors, remember_document, scrub
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 error_logs = ErrorLogs(DATA_DIR / "logs")
@@ -63,6 +63,7 @@ RUM_DURATION = Histogram("myoffice_rum_segment_seconds", "브라우저 구간별
 RUM_TRANSFER = Histogram("myoffice_rum_transfer_bytes", "브라우저 전송 바이트",
                          ["kind", "page"], buckets=BYTE_BUCKETS)
 RUM_RESOURCES = Counter("myoffice_rum_resources_total", "브라우저 리소스 수", ["kind", "cached", "page"])
+FEEDBACK_TOTAL = Counter("myoffice_feedback_total", "접수한 의견 수", ["kind"])
 HTTP_METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
 TIMING_ORIGINS = ", ".join(origin for origin in CORS_ORIGINS if origin != "*")
 
@@ -482,6 +483,114 @@ def too_many(key: str, limit: int = 10, window: int = 600) -> bool:
     lst = [t for t in _fails.get(key, []) if now - t < window]
     _fails[key] = lst
     return len(lst) >= limit
+
+
+FeedbackKind = Literal["bug", "suggestion", "other"]
+FeedbackStatus = Literal["new", "read", "done"]
+
+
+class FeedbackError(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal["js", "promise", "api", "toast", "editor"]
+    message: str = Field(min_length=1, max_length=500)
+
+
+class Feedback(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: FeedbackKind
+    message: str = Field(min_length=5, max_length=2000)
+    email: str | None = Field(default=None, max_length=254)
+    page: Literal["home", "edit", "login", "admin", "other"]
+    file_type: Literal["docx", "doc", "odt", "rtf", "txt", "xlsx", "xls", "ods", "csv",
+                       "pptx", "ppt", "odp", "hwp", "hwpx", "pdf"] | None = None
+    ua: str | None = Field(default=None, max_length=160)
+    screen: str | None = Field(default=None, pattern=r"^[0-9]{1,6}x[0-9]{1,6}$")
+    build: str | None = Field(default=None, max_length=100)
+    session_id: uuid.UUID | None = None
+    errors: list[FeedbackError] = Field(default_factory=list, max_length=5)
+
+
+class FeedbackPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: FeedbackStatus
+
+
+_feedback_window = -1
+
+
+@app.post("/api/feedback", status_code=201)
+async def submit_feedback(request: Request, user: dict | None = Depends(optional_user)):
+    global _feedback_window
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(415, "JSON 형식으로 보내 주세요")
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 16 * 1024:
+            raise HTTPException(413, "보낼 수 있는 용량을 초과했습니다")
+        raw.extend(chunk)
+    try:
+        body = Feedback.model_validate_json(raw)
+    except ValidationError:
+        raise HTTPException(422, "의견 입력 내용을 확인해 주세요") from None
+    message = body.message.strip()
+    if len(message) < 5:
+        raise HTTPException(422, "내용을 5자 이상 입력해 주세요")
+    email = (body.email or "").strip() or None
+    if email and not re.fullmatch(
+        r"[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+        r"@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+",
+        email, re.I | re.ASCII,
+    ):
+        raise HTTPException(422, "이메일 주소를 확인해 주세요")
+    if body.errors and not body.session_id:
+        raise HTTPException(422, "오류 기록의 세션 ID가 필요합니다")
+    uid = user["id"] if user else None
+    now = time.time()
+    window = int(now // 600)
+    if _feedback_window != window:
+        _feedback_window = window
+        for key, timestamps in _fails.copy().items():
+            if key.startswith("feedback:") and (not timestamps or now - timestamps[-1] >= 600):
+                _fails.pop(key, None)
+    keys = [f"feedback:ip:{client_ip(request)}"]
+    if uid is not None:
+        keys.append(f"feedback:user:{uid}")
+    # 검사와 기록 사이에 요청이 교차하지 않도록 이 구간에서는 대기하지 않는다.
+    if any(too_many(key, limit=5, window=600) for key in keys):
+        raise HTTPException(429, "의견을 너무 자주 보냈습니다. 잠시 후 다시 시도해 주세요")
+    errors = [{"kind": item.kind, "message": scrub(item.message, 500)} for item in body.errors]
+    fid = accounts.add_feedback((
+        uid, body.kind, message, email, body.page, body.file_type if body.page == "edit" else None,
+        scrub(body.ua, 160) if body.ua else None, body.screen, scrub(body.build, 100) if body.build else None,
+        str(body.session_id) if body.session_id else None, json.dumps(errors, ensure_ascii=False),
+    ))
+    now = time.time()
+    for key in keys:
+        _fails[key].append(now)
+    FEEDBACK_TOTAL.labels(body.kind).inc()
+    return {"id": fid}
+
+
+@app.get("/api/admin/feedback")
+def admin_feedback(status: FeedbackStatus | None = None, kind: FeedbackKind | None = None,
+                   limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0, le=2**63 - 1),
+                   _: dict = Depends(admin_user)):
+    return accounts.list_feedback(status, kind, limit, offset)
+
+
+@app.patch("/api/admin/feedback/{fid}", status_code=204)
+def admin_patch_feedback(fid: int, body: FeedbackPatch, _: dict = Depends(admin_user)):
+    if not 0 < fid < 2**63 or not accounts.update_feedback(fid, body.status):
+        raise HTTPException(404, "의견을 찾을 수 없습니다")
+    return Response(status_code=204)
+
+
+@app.delete("/api/admin/feedback/{fid}", status_code=204)
+def admin_delete_feedback(fid: int, _: dict = Depends(admin_user)):
+    if not 0 < fid < 2**63 or not accounts.delete_feedback(fid):
+        raise HTTPException(404, "의견을 찾을 수 없습니다")
+    return Response(status_code=204)
 
 
 _client_error_window = -1
