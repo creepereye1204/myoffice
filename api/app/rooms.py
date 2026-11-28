@@ -40,6 +40,15 @@ class Rooms:
         self.mu = asyncio.Lock()
 
     # ------------------------------------------------------------ 조회
+    def active_counts(self) -> dict[str, int]:
+        users = set()
+        count = 0
+        for room in self.rooms.values():
+            connected = {member.uid for member in room.members.values() if member.socks}
+            count += bool(connected)
+            users.update(connected)
+        return {"rooms": count, "users": len(users)}
+
     def lock_holder(self, fid: str) -> str | None:
         r = self.rooms.get(fid)
         return r.lock if r else None

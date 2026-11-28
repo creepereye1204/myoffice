@@ -288,3 +288,57 @@ dialog select { padding: 8px; border: 1px solid var(--line); border-radius: 8px;
 @media (max-width: 700px) {
   .feedback-trigger span { display: none; }
 }
+
+/* 관리자 대시보드 */
+.admin-page main { padding-inline: 16px; }
+.admin-page .topbar { padding-inline: 16px; gap: 8px; }
+.admin-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+.admin-tabs [aria-current] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.admin-tabs [aria-current] .tag { background: var(--surface); color: var(--text); }
+.admin-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+.admin-heading :is(h2, h3) { margin: 0; }
+.admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
+.admin-card { min-width: 0; padding: 14px; margin: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow-wrap: anywhere; }
+.admin-card strong { display: block; margin: 4px 0; font-size: 19px; }
+.admin-label, .admin-notice { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.admin-charts { margin-top: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
+.admin-charts figcaption { font-weight: 700; }
+.admin-charts svg { display: block; width: 100%; }
+.admin-legend, .admin-axis { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--muted); }
+.admin-legend { margin-top: 8px; }
+.admin-legend span { border-inline-start: 3px solid; padding-inline-start: 5px; }
+.admin-axis { justify-content: space-between; }
+.admin-card details { margin-top: 8px; }
+.admin-card pre { margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.admin-metrics { margin-top: 20px; }
+.admin-error-list { display: grid; gap: 12px; }
+.admin-error-list h3 { margin: 4px 0 8px; font-size: 15px; }
+.admin-page .admin-table { table-layout: fixed; }
+.admin-page #users th:last-child { width: 24%; }
+.admin-page .admin-table th, .admin-page .admin-table td { white-space: normal; overflow-wrap: anywhere; }
+.admin-page .feedback-admin-table .feedback-message { min-width: 0; white-space: pre-wrap; }
+.admin-page .admin-actions .btn { margin: 2px; max-width: 100%; white-space: normal; }
+.admin-page :is(input[type="search"], select) { max-width: 100%; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px; }
+
+@media (max-width: 760px) {
+  .admin-page .admin-table { display: block; background: transparent; border: 0; overflow: visible; }
+  .admin-page .admin-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .admin-page .admin-table tbody { display: grid; gap: 8px; }
+  .admin-page .admin-table tr { display: block; min-width: 0; padding: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+  .admin-page .admin-table td { display: block; border: 0; padding: 4px; text-align: left; }
+  .admin-page .admin-table td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 12px; }
+}
+
+/* 의견 첨부 이미지 */
+#feedback-dialog input[type="file"] { width: 100%; min-width: 0; }
+.feedback-image-help { color: var(--muted); font-size: 12px; }
+.feedback-thumbnails { display: flex; flex-wrap: wrap; gap: 8px; }
+.feedback-thumbnails:empty { display: none; }
+.feedback-message .feedback-thumbnails { margin-top: 8px; }
+.feedback-thumbnails > div { position: relative; }
+.feedback-thumbnails img, .feedback-image-button { display: block; width: 72px; height: 72px; border-radius: 8px; }
+.feedback-thumbnails img { object-fit: cover; border: 1px solid var(--line); }
+.feedback-thumbnails > div > button { position: absolute; top: 2px; right: 2px; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); cursor: pointer; }
+.feedback-image-button { padding: 0; border: 0; font-size: 11px; background: var(--hover); cursor: zoom-in; }
+#feedback-lightbox { width: min(960px, calc(100vw - 32px)); }
+#feedback-lightbox img { display: block; max-width: 100%; max-height: 76vh; margin: 0 auto; object-fit: contain; }

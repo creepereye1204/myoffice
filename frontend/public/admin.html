@@ -9,24 +9,60 @@
   <script src="/errors.js" defer></script>
   <script src="/analytics.js" defer></script>
 </head>
-<body>
+<body class="admin-page">
   <header class="topbar">
     <a class="brand" href="/"><img src="/favicon.svg" alt="" width="28" height="28" /><span>알오피스 관리자</span></a>
     <div class="grow"></div>
     <a class="btn" href="/">내 파일로</a>
   </header>
   <main>
-    <h2>사용자</h2>
-    <label class="switch"><input type="checkbox" id="signup" /> 새 회원가입 받기</label>
-    <p id="summary" class="usage" style="text-align:left"></p>
-    <div class="table-wrap">
-      <table class="admin-table">
-        <thead><tr><th>아이디</th><th>이름</th><th>상태</th><th class="num">파일</th><th class="num">사용량</th><th>가입</th><th>최근 로그인</th><th></th></tr></thead>
-        <tbody id="users"></tbody>
-      </table>
-    </div>
-    <section aria-labelledby="feedback-heading">
-      <h2 id="feedback-heading">의견 <span class="tag" id="feedback-unread" hidden></span></h2>
+    <nav class="admin-tabs" aria-label="관리자 메뉴">
+      <a href="#overview" class="btn">개요</a>
+      <a href="#users" class="btn">사용자</a>
+      <a href="#documents" class="btn">문서</a>
+      <a href="#feedback" class="btn">의견 <span class="tag" id="feedback-unread" hidden></span></a>
+      <a href="#errors" class="btn">에러</a>
+      <a href="#status" class="btn">서버 상태</a>
+    </nav>
+    <p id="admin-notice" class="admin-notice" role="status" hidden></p>
+    <section id="overview" aria-labelledby="overview-heading" hidden>
+      <div class="admin-heading"><h2 id="overview-heading">개요</h2><button class="btn" data-refresh>새로고침</button></div>
+      <div class="admin-grid" id="overview-stats"></div>
+      <div class="admin-grid admin-charts" id="overview-charts"></div>
+    </section>
+    <section id="users" aria-labelledby="users-heading" hidden>
+      <div class="admin-heading"><h2 id="users-heading">사용자</h2><button class="btn" data-refresh>새로고침</button></div>
+      <div class="feedback-admin-controls">
+        <label>검색 <input id="user-search" type="search" placeholder="아이디 또는 이름" /></label>
+        <label>정렬 <select id="user-sort">
+          <option value="default">기본 순서</option><option value="username">아이디</option>
+          <option value="created">최근 가입</option><option value="lastLogin">최근 로그인</option>
+          <option value="files">문서 수</option><option value="used">저장 용량</option>
+        </select></label>
+      </div>
+      <label class="switch"><input type="checkbox" id="signup" /> 새 회원가입 받기</label>
+      <p id="summary" class="admin-notice"></p>
+      <div class="table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>아이디</th><th>이름</th><th>상태</th><th class="num">문서 수</th><th class="num">저장 용량</th><th>가입</th><th>최근 로그인</th><th></th></tr></thead>
+          <tbody id="user-rows"></tbody>
+        </table>
+      </div>
+    </section>
+    <section id="documents" aria-labelledby="documents-heading" hidden>
+      <div class="admin-heading"><h2 id="documents-heading">문서</h2><button class="btn" data-refresh>새로고침</button></div>
+      <div class="admin-grid" id="document-stats"></div>
+      <h3>용량 상위 10개 문서</h3>
+      <div class="table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>문서 ID</th><th>소유자</th><th>형식</th><th>용량</th><th>수정 시각</th></tr></thead>
+          <tbody id="document-rows"></tbody>
+        </table>
+      </div>
+      <p class="admin-notice" id="document-empty" hidden>저장된 문서가 없습니다.</p>
+    </section>
+    <section id="feedback" aria-labelledby="feedback-heading" hidden>
+      <div class="admin-heading"><h2 id="feedback-heading">의견</h2><button class="btn" data-refresh>새로고침</button></div>
       <div class="feedback-admin-controls">
         <label>상태 <select id="feedback-status">
           <option value="">전체</option><option value="new">새 의견</option>
@@ -49,7 +85,34 @@
         <button class="btn" id="feedback-next" disabled>다음</button>
       </div>
     </section>
+    <section id="errors" aria-labelledby="errors-heading" hidden>
+      <div class="admin-heading"><h2 id="errors-heading">에러</h2><button class="btn" data-refresh>새로고침</button></div>
+      <div class="feedback-admin-controls">
+        <label>기간 <select id="errors-days">
+          <option value="1">최근 1일</option><option value="7" selected>최근 7일</option><option value="30">최근 30일</option>
+        </select></label>
+        <label><input id="errors-tests" type="checkbox" /> 테스트 기록 포함</label>
+      </div>
+      <p class="admin-notice" id="error-summary"></p>
+      <div class="admin-error-list" id="error-groups"></div>
+    </section>
+    <section id="status" aria-labelledby="status-heading" hidden>
+      <div class="admin-heading"><h2 id="status-heading">서버 상태</h2><button class="btn" data-refresh>새로고침</button></div>
+      <div class="admin-grid" id="status-stats"></div>
+      <div class="admin-heading admin-metrics">
+        <h3>최근 1시간 API 지표</h3><a class="btn" href="/grafana/">Grafana 열기</a>
+      </div>
+      <p class="admin-notice" id="prometheus-unavailable" hidden>Prometheus에 연결할 수 없습니다.</p>
+      <div class="admin-grid" id="status-metrics"></div>
+    </section>
   </main>
+  <dialog id="feedback-lightbox" aria-labelledby="feedback-lightbox-title">
+    <div class="admin-heading">
+      <h2 id="feedback-lightbox-title">첨부 이미지</h2>
+      <form method="dialog"><button class="btn">닫기</button></form>
+    </div>
+    <img alt="의견 첨부 이미지" />
+  </dialog>
   <script type="module" src="/admin.js"></script>
 </body>
 </html>

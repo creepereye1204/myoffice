@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import shutil
 import sqlite3
 import threading
 import time
@@ -29,6 +30,7 @@ def _tok_hash(token: str) -> str:
 class Accounts:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.feedback_dir = path.parent / "feedback"
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.mu = threading.RLock()
@@ -78,6 +80,14 @@ class Accounts:
               status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','read','done'))
             );
             CREATE INDEX IF NOT EXISTS feedback_status_id ON feedback(status, id);
+            CREATE TABLE IF NOT EXISTS feedback_images (
+              feedback_id INTEGER NOT NULL REFERENCES feedback(id) ON DELETE CASCADE,
+              n INTEGER NOT NULL CHECK (n BETWEEN 1 AND 3),
+              ext TEXT NOT NULL,
+              mime TEXT NOT NULL,
+              size INTEGER NOT NULL,
+              PRIMARY KEY (feedback_id, n)
+            );
             """)
             self.db.execute("PRAGMA foreign_keys=ON")
 
@@ -91,13 +101,47 @@ class Accounts:
         return rows[0] if rows else None
 
     # ------------------------------------------------------------ 의견
-    def add_feedback(self, fields: tuple) -> int:
+    def add_feedback(self, fields: tuple, images=()) -> int:
+        directory = None
         with self.mu:
-            return self.db.execute(
-                """INSERT INTO feedback
-                   (created_at,user_id,kind,message,email,page,file_type,ua,screen,build,session_id,errors_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (int(time.time()), *fields)).lastrowid
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                fid = self.db.execute(
+                    """INSERT INTO feedback
+                       (created_at,user_id,kind,message,email,page,file_type,ua,screen,build,session_id,errors_json)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (int(time.time()), *fields)).lastrowid
+                if images:
+                    target = self.feedback_dir / str(fid)
+                    # 이전 프로세스가 커밋 전에 종료된 경우 남은 첨부를 정리한다.
+                    if target.exists():
+                        shutil.rmtree(target)
+                    target.mkdir(parents=True)
+                    directory = target
+                    for n, (ext, mime, data) in enumerate(images, 1):
+                        (directory / f"{n}.{ext}").write_bytes(data)
+                        self.db.execute(
+                            "INSERT INTO feedback_images (feedback_id,n,ext,mime,size) VALUES (?,?,?,?,?)",
+                            (fid, n, ext, mime, len(data)))
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                if directory is not None:
+                    shutil.rmtree(directory, ignore_errors=True)
+                raise
+        return fid
+
+    def get_feedback_image(self, fid: int, n: int):
+        with self.mu:
+            image = self._one(
+                "SELECT ext,mime FROM feedback_images WHERE feedback_id=? AND n=?", (fid, n))
+            if image is not None:
+                try:
+                    path = self.feedback_dir / str(fid) / f"{n}.{image['ext']}"
+                    return path.read_bytes(), image["mime"]
+                except FileNotFoundError:
+                    return None
+        return None
 
     def list_feedback(self, status, kind, limit: int, offset: int) -> dict:
         filters, args = [], []
@@ -110,9 +154,18 @@ class Accounts:
         where = " WHERE " + " AND ".join(filters) if filters else ""
         with self.mu:
             rows = self._q(f"SELECT * FROM feedback{where} ORDER BY id DESC LIMIT ? OFFSET ?", (*args, limit, offset))
+            items = {row["id"]: {**dict(row), "images": []} for row in rows}
+            if items:
+                placeholders = ",".join("?" for _ in items)
+                images = self._q(
+                    f"SELECT feedback_id,n,mime,size FROM feedback_images "
+                    f"WHERE feedback_id IN ({placeholders}) ORDER BY n", tuple(items))
+                for image in images:
+                    items[image["feedback_id"]]["images"].append(
+                        {"n": image["n"], "mime": image["mime"], "size": image["size"]})
             total = self._one(f"SELECT COUNT(*) FROM feedback{where}", tuple(args))[0]
             unread = self._one("SELECT COUNT(*) FROM feedback WHERE status='new'")[0]
-        return {"items": [dict(row) for row in rows], "total": total, "unread": unread}
+        return {"items": list(items.values()), "total": total, "unread": unread}
 
     def update_feedback(self, fid: int, status: str) -> bool:
         with self.mu:
@@ -120,6 +173,11 @@ class Accounts:
 
     def delete_feedback(self, fid: int) -> bool:
         with self.mu:
+            if not self._one("SELECT 1 FROM feedback WHERE id=?", (fid,)):
+                return False
+            directory = self.feedback_dir / str(fid)
+            if directory.exists():
+                shutil.rmtree(directory)
             return self.db.execute("DELETE FROM feedback WHERE id=?", (fid,)).rowcount > 0
 
     # ------------------------------------------------------------ users

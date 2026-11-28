@@ -29,10 +29,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import Counter, Histogram, start_http_server
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .error_logs import CLIENT_BATCH, ErrorLogs, RequestErrors, remember_document, scrub
+from .admin_dashboard import AdminDashboard
+from .error_reporting import CLIENT_BATCH, ErrorLogs, RequestErrors, remember_document, scrub
+from .feedback_images import prepare_feedback_images, read_feedback_request
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 error_logs = ErrorLogs(DATA_DIR / "logs")
@@ -518,17 +521,26 @@ class FeedbackPatch(BaseModel):
 _feedback_window = -1
 
 
+def feedback_rate_keys(request, uid):
+    global _feedback_window
+    now = time.time()
+    window = int(now // 600)
+    if _feedback_window != window:
+        _feedback_window = window
+        for key, timestamps in _fails.copy().items():
+            if key.startswith("feedback:") and (not timestamps or now - timestamps[-1] >= 600):
+                _fails.pop(key, None)
+    keys = [f"feedback:ip:{client_ip(request)}"]
+    if uid is not None:
+        keys.append(f"feedback:user:{uid}")
+    if any(too_many(key, limit=5, window=600) for key in keys):
+        raise HTTPException(429, "의견을 너무 자주 보냈습니다. 잠시 후 다시 시도해 주세요")
+    return keys
+
+
 @app.post("/api/feedback", status_code=201)
 async def submit_feedback(request: Request, user: dict | None = Depends(optional_user)):
-    global _feedback_window
-    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if content_type != "application/json":
-        raise HTTPException(415, "JSON 형식으로 보내 주세요")
-    raw = bytearray()
-    async for chunk in request.stream():
-        if len(raw) + len(chunk) > 16 * 1024:
-            raise HTTPException(413, "보낼 수 있는 용량을 초과했습니다")
-        raw.extend(chunk)
+    raw, uploads = await read_feedback_request(request)
     try:
         body = Feedback.model_validate_json(raw)
     except ValidationError:
@@ -546,25 +558,18 @@ async def submit_feedback(request: Request, user: dict | None = Depends(optional
     if body.errors and not body.session_id:
         raise HTTPException(422, "오류 기록의 세션 ID가 필요합니다")
     uid = user["id"] if user else None
-    now = time.time()
-    window = int(now // 600)
-    if _feedback_window != window:
-        _feedback_window = window
-        for key, timestamps in _fails.copy().items():
-            if key.startswith("feedback:") and (not timestamps or now - timestamps[-1] >= 600):
-                _fails.pop(key, None)
-    keys = [f"feedback:ip:{client_ip(request)}"]
-    if uid is not None:
-        keys.append(f"feedback:user:{uid}")
-    # 검사와 기록 사이에 요청이 교차하지 않도록 이 구간에서는 대기하지 않는다.
-    if any(too_many(key, limit=5, window=600) for key in keys):
-        raise HTTPException(429, "의견을 너무 자주 보냈습니다. 잠시 후 다시 시도해 주세요")
+    keys = feedback_rate_keys(request, uid)
+    images = []
+    if uploads:
+        images = await run_in_threadpool(prepare_feedback_images, uploads)
+        # 이미지 변환 중에 처리된 제출까지 포함해 저장 직전에 다시 확인한다.
+        keys = feedback_rate_keys(request, uid)
     errors = [{"kind": item.kind, "message": scrub(item.message, 500)} for item in body.errors]
     fid = accounts.add_feedback((
         uid, body.kind, message, email, body.page, body.file_type if body.page == "edit" else None,
         scrub(body.ua, 160) if body.ua else None, body.screen, scrub(body.build, 100) if body.build else None,
         str(body.session_id) if body.session_id else None, json.dumps(errors, ensure_ascii=False),
-    ))
+    ), images)
     now = time.time()
     for key in keys:
         _fails[key].append(now)
@@ -577,6 +582,20 @@ def admin_feedback(status: FeedbackStatus | None = None, kind: FeedbackKind | No
                    limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0, le=2**63 - 1),
                    _: dict = Depends(admin_user)):
     return accounts.list_feedback(status, kind, limit, offset)
+
+
+@app.get("/api/admin/feedback/{fid}/images/{n}")
+def admin_feedback_image(fid: int, n: int, _: dict = Depends(admin_user)):
+    image = accounts.get_feedback_image(fid, n) if 0 < fid < 2**63 and 1 <= n <= 3 else None
+    if image is None:
+        raise HTTPException(404, "첨부 이미지를 찾을 수 없습니다")
+    data, mime = image
+    return Response(data, media_type=mime, headers={
+        "Content-Disposition": f'inline; filename="image-{n}.webp"',
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'",
+        "Cache-Control": "no-store",
+    })
 
 
 @app.patch("/api/admin/feedback/{fid}", status_code=204)
@@ -732,6 +751,34 @@ def change_name(body: NameChange, u: dict = Depends(current_user)):
 
 
 # ---------------------------------------------------------------- 관리자
+dashboard = AdminDashboard(accounts, DATA_DIR, APP_EXT, ALLOWED, DS_INTERNAL_URL,
+                           os.getenv("APP_VERSION") or app.version)
+
+
+@app.get("/api/admin/overview")
+async def admin_overview(_: dict = Depends(admin_user)):
+    # 실시간 방은 WebSocket과 같은 이벤트 루프에서 집계한다.
+    live = rooms.active_counts()
+    return await run_in_threadpool(dashboard.overview, live)
+
+
+@app.get("/api/admin/documents")
+def admin_documents(_: dict = Depends(admin_user)):
+    documents, _ = dashboard.document_data()
+    return documents
+
+
+@app.get("/api/admin/errors")
+def admin_errors(days: Literal["1", "7", "30"] = "7", tests: Literal["0", "1"] = "0",
+                 _: dict = Depends(admin_user)):
+    return dashboard.errors(int(days), tests == "1")
+
+
+@app.get("/api/admin/status")
+def admin_status(_: dict = Depends(admin_user)):
+    return dashboard.status()
+
+
 @app.get("/api/admin/users")
 def admin_users(_: dict = Depends(admin_user)):
     out = []

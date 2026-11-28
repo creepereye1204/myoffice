@@ -13,7 +13,6 @@ FIX = Path(__file__).resolve().parent.parent / "fixtures"
 
 
 ADMIN_USER = os.environ.get("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 
 
 @pytest.fixture(scope="session")
@@ -24,7 +23,7 @@ def http():
 
 @pytest.fixture(scope="session")
 def admin(http):
-    r = http.post("/api/auth/login", json={"username": ADMIN_USER, "password": ADMIN_PASSWORD})
+    r = http.post("/api/auth/login", json={"username": ADMIN_USER, "password": os.environ["ADMIN_PASSWORD"]})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 

@@ -12,7 +12,7 @@ export function clearSession() { try { localStorage.removeItem(TOKEN_KEY); local
 export function cachedMe() { try { return JSON.parse(localStorage.getItem(ME_KEY) || 'null'); } catch { return null; } }
 
 export function goLogin() {
-  location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+  location.href = `/login?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
 }
 
 /** 로그인 필수 페이지: 세션 확인, 없으면 로그인 화면으로 */
@@ -92,6 +92,7 @@ export async function api(path, { includeShare = true, ...opts } = {}) {
   try {
     r = await fetch(`${API_BASE}${path}`, { ...opts, headers, body, signal: ctrl?.signal || opts.signal });
   } catch (e) {
+    if (opts.signal?.aborted) throw e;
     const err = new Error(e.name === 'AbortError' ? '서버 응답이 없습니다. 잠시 후 다시 저장합니다' : '네트워크 연결을 확인하세요');
     err.status = 0;
     reportApiError(path, method, 0, err.message);

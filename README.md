@@ -13,7 +13,7 @@
 
 ## 기능
 - 새로 만들기: 워드·엑셀·파워포인트 (MS Office), 한글·한셀·한쇼 (한컴오피스 — 한셀/한쇼는 xlsx/pptx로 만들어 한셀·한쇼에서 바로 열림)
-- 계정: 회원가입/로그인, 관리자 페이지(`/admin` — 사용자 목록, 사용 중지, 비밀번호 재설정, 삭제, 가입 열고 닫기)
+- 계정: 회원가입/로그인, 관리자 콘솔(`/admin`)
 - 공유: 특정 사용자(아이디)에게 보기/편집 권한, 또는 링크(로그인 없이 보기/편집)
 - 실시간 공동 편집
   - Office 문서: ONLYOFFICE 자체 WebSocket으로 글자 단위 동시 편집
@@ -91,6 +91,12 @@ docker compose up -d --build
 - 컨테이너는 호스트 포트를 열지 않는다. 앞단 리버스 프록시가 `rhwp_default` 네트워크로 `rhwp-web:80`, `rhwp-api:8000`에 연결.
 - 도메인은 코드에 넣지 않는다: 프론트는 `www.X` → `api.X`, ONLYOFFICE는 같은 출처 `/office/`. CORS만 compose의 `CORS_ORIGINS`로 설정.
 
+## 관리자
+
+- `/admin`의 **개요**, **사용자**, **문서**, **의견**, **에러**, **서버 상태** 탭을 사용합니다. 탭은 URL 해시에 유지되며 개요와 서버 상태는 화면에 표시되는 동안 60초마다 갱신됩니다.
+- 사용자 탭에서 계정과 가입 설정을 관리합니다. 최근 로그인은 기존 로그인 기록을 사용합니다. 문서 통계와 생성 추이는 현재 저장된 문서를 기준으로 계산하며, 데이터 디렉터리 용량에는 문서 본문 용량이 포함됩니다.
+- 에러 탭은 기본으로 테스트 기록을 제외합니다. 서버 상태에서 ONLYOFFICE, 데이터 볼륨, 최근 1시간 API 지표와 Grafana를 확인할 수 있습니다.
+
 ## 모니터링
 - [Grafana](https://www.myoffice.p-e.kr/grafana/)에서 `admin`과 `.env`의 `GRAFANA_ADMIN_PASSWORD`로 처음 로그인한다. 실행 전에 비밀번호를 설정한다.
 - 브라우저 패널은 리소스 종류별 DNS·TCP·TLS·응답 대기(TTFB)·다운로드 시간의 p50/p95, 전체 시간, 전송량과 캐시 적중률을 보여 준다. `page`에서 홈과 편집 화면을 선택할 수 있다.
@@ -103,7 +109,7 @@ docker compose up -d --build
 WEB_URL=https://www.<도메인> API_URL=https://api.<도메인> tests/run-api-tests.sh   # API (pytest, 도커 안에서)
 WEB_URL=https://www.<도메인> API_URL=https://api.<도메인> tests/e2e/run.sh         # 브라우저 E2E (Playwright)
 ```
-관리자 비밀번호는 `.env`에서 읽어 테스트 계정을 만들고, 끝나면 지운다.
+관리자 비밀번호는 `.env`에서 읽어 테스트 계정을 만들고, 끝나면 지운다. 관리자 대시보드 API는 API 의존성과 pytest를 설치한 환경에서 `python -m pytest tests/api/test_admin_dashboard.py`로 오프라인 검증할 수 있다.
 
 ## rhwp-studio 업데이트
 `frontend/public/rhwp/`는 https://edwardkim.github.io/rhwp/ 빌드를 sw.js precache 목록 + wasm 2개로 미러한 것.

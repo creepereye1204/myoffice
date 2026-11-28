@@ -1,99 +1,15 @@
 #!/usr/bin/env python3
 """최근 오류 JSONL을 읽고 같은 오류를 묶어 요약한다."""
 import argparse
-import json
-import re
-from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+import sys
+from datetime import timezone
 from pathlib import Path
 
-LOG_DIR = Path(__file__).resolve().parent.parent / "data" / "logs"
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "api"))
+from app.error_logs import summarize  # noqa: E402
 
-
-def normalize(message):
-    message = re.sub(r"\b\d{4}-\d{2}-\d{2}(?:T[\d:.]+(?:Z|[+-]\d\d:\d\d)?)?\b", "<시각>", message)
-    message = re.sub(r"\b\d{10,}\b", "<숫자>", message)
-    return " ".join(message.split())
-
-
-@dataclass
-class Group:
-    first: datetime
-    last: datetime
-    count: int = 0
-    pages: set = field(default_factory=set)
-    file_types: set = field(default_factory=set)
-    builds: set = field(default_factory=set)
-    sample_stack: str = ""
-    request_id: str = ""
-    session_id: str = ""
-
-    def add(self, ts, record, stack):
-        self.count += 1
-        self.first = min(self.first, ts)
-        self.last = max(self.last, ts)
-        for field_name, values in (("page", self.pages), ("fileType", self.file_types), ("build", self.builds)):
-            value = record.get(field_name)
-            if isinstance(value, str) and value:
-                values.add(value)
-        request_id = record.get("request_id") or ""
-        session_id = record.get("sessionId") or ""
-        if (stack and not self.sample_stack) or (stack and request_id and not self.request_id):
-            self.sample_stack = stack
-            self.request_id = request_id
-            self.session_id = session_id
-        elif not self.sample_stack and not (self.request_id or self.session_id):
-            self.request_id = request_id
-            self.session_id = session_id
-
-
-def summarize(log_dir, days, include_tests=False):
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=days)
-    groups = {}
-    skipped = 0
-    for path in sorted(log_dir.glob("*.jsonl")):
-        try:
-            log_day = date.fromisoformat(path.stem[-10:])
-        except ValueError:
-            log_day = None
-        if log_day and log_day < cutoff.date():
-            continue
-        with path.open(encoding="utf-8", errors="replace") as stream:
-            for line in stream:
-                try:
-                    record = json.loads(line)
-                    if not isinstance(record, dict):
-                        raise ValueError("레코드 형식 오류")
-                    # Python 3.10 이하의 fromisoformat 은 끝의 Z 를 못 읽는다
-                    ts = datetime.fromisoformat(str(record["ts"]).replace("Z", "+00:00"))
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                    kind = record["kind"]
-                    if not isinstance(kind, str):
-                        raise ValueError("오류 종류 형식 오류")
-                    message = normalize(record["message"])
-                    stack = record.get("traceback") or record.get("stack") or ""
-                    frames = [line.strip() for line in stack.splitlines() if line.strip()]
-                except (AttributeError, KeyError, TypeError, ValueError):
-                    skipped += 1
-                    continue
-                if not cutoff <= ts <= now:
-                    continue
-                # 자동 테스트(API_TEST_ERROR, E2E_TEST_ERROR)가 남긴 기록은 기본으로 뺀다
-                if not include_tests and "_TEST_ERROR" in message:
-                    continue
-                if frames:
-                    top = frames[-1] if record.get("traceback") else frames[0]
-                elif record.get("filename"):
-                    top = f"{record['filename']}:{record.get('line', '')}:{record.get('col', '')}"
-                else:
-                    top = ""
-                key = kind, message, top
-                if key not in groups:
-                    groups[key] = Group(ts, ts)
-                groups[key].add(ts, record, stack)
-    return groups, skipped
+LOG_DIR = ROOT / "data" / "logs"
 
 
 def main():
@@ -104,7 +20,7 @@ def main():
     args = parser.parse_args()
     if args.days < 1:
         parser.error("--days는 1 이상이어야 합니다.")
-    groups, skipped = summarize(args.log_dir, args.days, args.include_tests)
+    groups, skipped, _, _ = summarize(args.log_dir, args.days, args.include_tests)
     total = sum(group.count for group in groups.values())
     print(f"최근 {args.days}일 오류 {total}건, {len(groups)}개 그룹 (UTC)")
     if skipped:
