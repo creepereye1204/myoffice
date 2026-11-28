@@ -125,9 +125,9 @@ class Accounts:
                             (fid, n, ext, mime, len(data)))
                 self.db.commit()
             except BaseException:
-                self.db.rollback()
                 if directory is not None:
                     shutil.rmtree(directory, ignore_errors=True)
+                self.db.rollback()
                 raise
         return fid
 
@@ -138,7 +138,7 @@ class Accounts:
             if image is not None:
                 try:
                     path = self.feedback_dir / str(fid) / f"{n}.{image['ext']}"
-                    return path.read_bytes(), image["mime"]
+                    return path.read_bytes(), image["mime"], image["ext"]
                 except FileNotFoundError:
                     return None
         return None
@@ -163,6 +163,8 @@ class Accounts:
                 for image in images:
                     items[image["feedback_id"]]["images"].append(
                         {"n": image["n"], "mime": image["mime"], "size": image["size"]})
+            for item in items.values():
+                item["image_count"] = len(item["images"])
             total = self._one(f"SELECT COUNT(*) FROM feedback{where}", tuple(args))[0]
             unread = self._one("SELECT COUNT(*) FROM feedback WHERE status='new'")[0]
         return {"items": list(items.values()), "total": total, "unread": unread}

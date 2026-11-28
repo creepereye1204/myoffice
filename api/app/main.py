@@ -589,9 +589,9 @@ def admin_feedback_image(fid: int, n: int, _: dict = Depends(admin_user)):
     image = accounts.get_feedback_image(fid, n) if 0 < fid < 2**63 and 1 <= n <= 3 else None
     if image is None:
         raise HTTPException(404, "첨부 이미지를 찾을 수 없습니다")
-    data, mime = image
+    data, mime, ext = image
     return Response(data, media_type=mime, headers={
-        "Content-Disposition": f'inline; filename="image-{n}.webp"',
+        "Content-Disposition": f'inline; filename="image-{n}.{ext}"',
         "X-Content-Type-Options": "nosniff",
         "Content-Security-Policy": "default-src 'none'",
         "Cache-Control": "no-store",

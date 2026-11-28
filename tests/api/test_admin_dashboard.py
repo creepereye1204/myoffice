@@ -1,6 +1,8 @@
 """임시 저장소와 ASGI 요청으로 관리자 대시보드를 검증한다."""
 import asyncio
 import importlib
+import io
+import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,16 +67,16 @@ def dashboard_client(tmp_path_factory):
 
         patch.setattr(httpx.Client, "get", service_response)
         # ASGI lifespan을 시작하지 않아 메트릭 포트와 자동 저장 작업을 열지 않는다.
-        def get(path, headers=None):
-            async def request():
+        def request(path, headers=None, *, method="GET", **kwargs):
+            async def send():
                 transport = httpx.ASGITransport(app=main.app)
                 async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-                    return await client.get(path, headers=headers)
+                    return await client.request(method, path, headers=headers, **kwargs)
 
-            return asyncio.run(request())
+            return asyncio.run(send())
 
         try:
-            yield get, headers(admin), headers(member), doc["id"]
+            yield request, headers(admin), headers(member), doc["id"]
         finally:
             main.accounts.db.close()
 
@@ -134,3 +136,84 @@ def test_admin_status_with_prometheus_offline(dashboard_client):
         "available": False, "windowSeconds": 3600, "requestsPerMinute": None,
         "p95Seconds": None, "errorRate": None,
     }
+
+
+@pytest.fixture
+def feedback_png():
+    from PIL import Image, PngImagePlugin
+
+    output = io.BytesIO()
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("Comment", "private metadata")
+    Image.new("RGB", (20, 12), "blue").save(output, format="PNG", pnginfo=metadata)
+    return output.getvalue()
+
+
+FEEDBACK_PAYLOAD = {"kind": "bug", "message": "이미지 첨부 테스트입니다", "page": "home"}
+
+
+def post_feedback_images(request, *images):
+    return request("/api/feedback", method="POST", data={"payload": json.dumps(FEEDBACK_PAYLOAD)},
+                   files=[("images", ("private.png", image, "image/png")) for image in images])
+
+
+def test_feedback_image_access_metadata_and_deletion(dashboard_client, feedback_png):
+    from PIL import Image
+
+    request, admin, member, _ = dashboard_client
+    response = post_feedback_images(request, feedback_png)
+    assert response.status_code == 201, response.text
+    fid = response.json()["id"]
+    path = f"/api/admin/feedback/{fid}/images/1"
+    assert request(path).status_code == 401
+    assert request(path, member).status_code == 403
+    result = request(path, admin)
+    assert result.status_code == 200
+    assert result.headers["content-type"] == "image/webp"
+    assert result.headers["content-disposition"] == 'inline; filename="image-1.webp"'
+    assert result.headers["x-content-type-options"] == "nosniff"
+    assert result.headers["content-security-policy"] == "default-src 'none'"
+    assert result.headers["cache-control"] == "no-store"
+    with Image.open(io.BytesIO(result.content)) as image:
+        assert image.size == (20, 12)
+        assert "Comment" not in image.info
+    assert b"private metadata" not in result.content
+
+    items = request("/api/admin/feedback", admin).json()["items"]
+    item = next(item for item in items if item["id"] == fid)
+    assert item["images"] == [{"n": 1, "mime": "image/webp", "size": len(result.content)}]
+    accounts = importlib.import_module("app.main").accounts
+    storage = accounts.feedback_dir / str(fid)
+    assert (storage / "1.webp").is_file()
+    assert request(f"/api/admin/feedback/{fid}", admin, method="DELETE").status_code == 204
+    assert not storage.exists()
+    assert request(path, admin).status_code == 404
+
+
+@pytest.mark.parametrize("image_count", [1, 4])
+def test_feedback_rejects_non_images_and_four_attachments(dashboard_client, feedback_png, image_count):
+    request, admin, _, _ = dashboard_client
+    before = request("/api/admin/feedback", admin).json()["total"]
+    images = [b"not a real image"] if image_count == 1 else [feedback_png] * image_count
+    assert post_feedback_images(request, *images).status_code == 422
+    assert request("/api/admin/feedback", admin).json()["total"] == before
+
+
+def test_feedback_attachment_size_limits(dashboard_client, feedback_png):
+    request, _, _, _ = dashboard_client
+    too_large = feedback_png.ljust(5 * 1024 * 1024 + 1, b"\x00")
+    assert post_feedback_images(request, too_large).status_code == 413
+    huge = b"--example\r\nContent-Disposition: form-data; name=\"images\"; filename=\"a.png\"\r\n\r\n"
+    huge = huge.ljust(16 * 1024 * 1024 + 1, b"0")
+    response = request("/api/feedback", method="POST", content=huge,
+                       headers={"Content-Type": "multipart/form-data; boundary=example"})
+    assert response.status_code == 413
+
+
+def test_feedback_json_submission_still_works(dashboard_client):
+    request, admin, _, _ = dashboard_client
+    response = request("/api/feedback", method="POST", json=FEEDBACK_PAYLOAD)
+    assert response.status_code == 201
+    fid = response.json()["id"]
+    items = request("/api/admin/feedback", admin).json()["items"]
+    assert next(item for item in items if item["id"] == fid)["images"] == []

@@ -2,7 +2,7 @@
 import io
 
 from fastapi import HTTPException, Request
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageSequence
 from python_multipart.exceptions import MultipartParseError
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
@@ -12,6 +12,8 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_IMAGES = 3
 MAX_PIXELS = 24_000_000
+MAX_GIF_PIXELS = 48_000_000
+MAX_GIF_FRAMES = 256
 IMAGE_FORMATS = ("PNG", "JPEG", "WEBP", "GIF")
 
 
@@ -73,7 +75,7 @@ async def read_feedback_request(request: Request):
             raise HTTPException(422, "의견 입력 내용을 확인해 주세요")
         images = []
         for key, part in form.multi_items():
-            if key == "payload":
+            if key == "payload" and isinstance(part, str):
                 continue
             if key != "images" or not isinstance(part, UploadFile):
                 raise HTTPException(422, "첨부 이미지를 확인해 주세요")
@@ -85,25 +87,48 @@ async def read_feedback_request(request: Request):
         await form.close()
 
 
+def clean_frame(source):
+    image = ImageOps.exif_transpose(source).convert("RGBA")
+    image.thumbnail((1920, 1920))
+    # 픽셀만 새 이미지로 옮겨 EXIF 등 메타데이터를 제거한다.
+    clean = Image.new("RGBA", image.size)
+    clean.paste(image)
+    return clean
+
+
+def encode_gif(source, encoded):
+    frames, durations = [], []
+    loop = source.info.get("loop")
+    pixels = source.width * source.height
+    for i, frame in enumerate(ImageSequence.Iterator(source), 1):
+        # 프레임을 디코딩하기 전에 애니메이션 전체의 처리량을 제한한다.
+        if i > MAX_GIF_FRAMES or i * pixels > MAX_GIF_PIXELS:
+            raise HTTPException(422, "GIF 프레임 수 또는 해상도가 너무 높습니다")
+        durations.append(frame.info.get("duration", 0))
+        frames.append(clean_frame(frame))
+    options = {} if loop is None else {"loop": loop}
+    frames[0].save(encoded, format="GIF", save_all=True, append_images=frames[1:],
+                   duration=durations, disposal=2, **options)
+
+
 def prepare_feedback_images(images):
     prepared = []
     for data in images:
         try:
-            # Pillow가 선언된 MIME 대신 파일 서명으로 형식을 판별하고 픽셀을 디코딩한다.
+            # Pillow가 선언된 MIME 대신 파일 서명으로 형식을 판별한다.
             with Image.open(io.BytesIO(data), formats=IMAGE_FORMATS) as source:
-                if source.width * source.height > MAX_PIXELS:
+                if source.width * source.height > min(MAX_PIXELS, Image.MAX_IMAGE_PIXELS or MAX_PIXELS):
                     raise HTTPException(422, "이미지 해상도가 너무 높습니다")
-                source.load()
-                image = ImageOps.exif_transpose(source).convert("RGBA")
-                image.thumbnail((1920, 1920))
-                # 첫 프레임의 픽셀만 새 이미지로 옮겨 EXIF 등 메타데이터를 제거한다.
-                clean = Image.new("RGBA", image.size)
-                clean.paste(image)
                 encoded = io.BytesIO()
-                clean.save(encoded, format="WEBP", quality=85)
+                if source.format == "GIF":
+                    encode_gif(source, encoded)
+                    ext, mime = "gif", "image/gif"
+                else:
+                    clean_frame(source).save(encoded, format="WEBP", quality=85)
+                    ext, mime = "webp", "image/webp"
         except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
             raise HTTPException(422, "PNG, JPEG, WebP 또는 GIF 이미지를 첨부해 주세요") from None
         if encoded.tell() > MAX_IMAGE_BYTES:
             raise HTTPException(413, "이미지 한 장은 5MB까지 첨부할 수 있습니다")
-        prepared.append(("webp", "image/webp", encoded.getvalue()))
+        prepared.append((ext, mime, encoded.getvalue()))
     return prepared

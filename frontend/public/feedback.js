@@ -21,7 +21,7 @@ dialog.innerHTML = `
       <input type="file" name="images" accept="image/png,image/jpeg,image/webp,image/gif" multiple
              aria-describedby="feedback-image-help" />
     </label>
-    <div id="feedback-image-help" class="feedback-image-help">최대 3장 · 장당 5MB. 내용 입력란에 끌어 놓거나 붙여넣을 수 있습니다.</div>
+    <div id="feedback-image-help" class="feedback-image-help">최대 3장 · 원본 장당 10MB. 내용 입력란에 끌어 놓거나 붙여넣을 수 있습니다.</div>
     <div class="feedback-thumbnails" id="feedback-previews"></div>
     <label class="feedback-field">답장 받을 이메일 (선택)
       <input type="email" name="email" maxlength="254" autocomplete="email" />
@@ -44,6 +44,7 @@ const encoder = new TextEncoder();
 const previews = dialog.querySelector('#feedback-previews');
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const imageLimit = 5 * 1024 * 1024;
+const originalLimit = 10 * 1024 * 1024;
 const attachments = [];
 let context;
 let processing = false;
@@ -67,7 +68,8 @@ async function resizeImage(file) {
     const encode = (type) => new Promise((resolve) => canvas.toBlob(resolve, type, 0.85));
     let blob = await encode('image/webp');
     if (blob?.type !== 'image/webp') blob = await encode('image/jpeg');
-    if (!blob || blob.size > imageLimit) throw new Error();
+    if (blob?.type !== 'image/webp' && blob?.type !== 'image/jpeg') throw new Error();
+    if (blob.size > imageLimit) throw new Error();
     return blob;
   } finally {
     bitmap.close();
@@ -107,12 +109,12 @@ async function attachFiles(files) {
         toast('이미지는 최대 3장까지 첨부할 수 있습니다', 'err', [], dialog);
         break;
       }
-      if (!imageTypes.has(file.type) || file.size > imageLimit) {
-        toast('5MB 이하의 PNG, JPEG, WebP 또는 GIF 이미지를 선택해 주세요', 'err', [], dialog);
+      if (!imageTypes.has(file.type) || file.size > originalLimit) {
+        toast('10MB 이하의 PNG, JPEG, WebP 또는 GIF 이미지를 선택해 주세요', 'err', [], dialog);
         continue;
       }
       try {
-        const blob = await resizeImage(file);
+        const blob = file.type === 'image/gif' && file.size <= imageLimit ? file : await resizeImage(file);
         if (!dialog.open || version !== generation) return;
         previewAttachment(blob);
       } catch {
@@ -206,10 +208,11 @@ form.addEventListener('submit', async (event) => {
   }
   let payload = body;
   if (attachments.length) {
+    const extensions = { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/gif': 'gif' };
     payload = new FormData();
     payload.append('payload', JSON.stringify(body));
     for (const { blob } of attachments) {
-      payload.append('images', blob, blob.type === 'image/webp' ? 'image.webp' : 'image.jpg');
+      payload.append('images', blob, `image.${extensions[blob.type]}`);
     }
   }
   submitting = cancel.disabled = true;

@@ -80,6 +80,13 @@ const fullImage = lightbox.querySelector('img');
 let feedbackImageObserver;
 let feedbackImagePage;
 
+lightbox.addEventListener('click', (event) => {
+  if (event.target === lightbox || event.target === fullImage) lightbox.close();
+});
+lightbox.addEventListener('close', () => {
+  if (!lightbox.open) fullImage.removeAttribute('src');
+});
+
 function clearFeedbackImages() {
   feedbackImageObserver?.disconnect();
   feedbackImagePage?.abort();
@@ -140,7 +147,10 @@ function feedbackRow(item) {
   });
   const message = row.cells[1];
   message.className = 'feedback-message';
-  if (item.images?.length) {
+  if (item.image_count) {
+    const count = document.createElement('div');
+    count.textContent = `첨부 이미지 ${item.image_count}장`;
+    message.append(count);
     const attachments = document.createElement('div');
     attachments.className = 'feedback-thumbnails';
     for (const { n } of item.images) {
