@@ -315,54 +315,19 @@ def test_ws_cursor_broadcast_validation_and_rate(http, U):
             await a.send({"type": "ping"})
             assert json.loads(await asyncio.wait_for(a.ws.recv(), 10)) == {"type": "pong"}
 
-            drag = {**move, "page": 1, "d": [30.25, 42], "dp": 0}
-            selection = {**move, "page": 1, "sel": [[120.5, 300 + i * 12, 42.75, 12] for i in range(20)]}
-            hwp_ts = {"space": "hwp", "rects": [[i // 20, 120.5, 40 + i, 42.75, 12] for i in range(40)]}
-            viewport_ts = {"space": "viewport", "rects": [[0, 0.2, 0.5, 0.3, 0.04]]}
-            cell_ts = {"space": "cell", "sheet": 2, "ranges": [[0, 0, 1_048_575, 16_383]] * 20}
-            text_ts = {"space": "text", "text": "Collaborative text…", "range": None}
-            range_ts = {"space": "text", "text": "", "range": "'매출 ''26'!B2:D5"}
-            clear = {"type": "cursor", "ts": None}
-            for update in (drag, selection, {**move, "ts": hwp_ts}, {"type": "cursor", "ts": text_ts},
-                           {"type": "cursor", "ts": range_ts}, clear):
-                await asyncio.sleep(0.06)
-                if update.get("ts"):
-                    await a.send({**update, "uid": "다른 사용자", "ts": {**update["ts"], "extra": True}})
-                else:
-                    await a.send(update)
-                assert await b.wait(lambda m: m["type"] == "cursor") == {**update, "uid": uid}
-
             # 제한 간격을 넘긴 뒤에도 잘못된 좌표와 임의 필드는 전달되지 않는다.
             await asyncio.sleep(0.06)
             for invalid in ({**move, "x": True}, {**move, "y": "3"}, {**move, "x": 10**20},
                             {**move, "space": "viewport"}, {**move, "uid": "다른 사용자"},
-                            {**move, "d": [0, False]}, {**move, "d": [1, 2, 3]},
-                            {**move, "x": 0.5, "y": 0.5, "space": "viewport", "d": [0, 1.1]},
-                            {**move, "dp": 0}, {**drag, "dp": 100_000},
-                            {**selection, "sel": [[0, 0, 1, 1]] * 21},
-                            {**move, "sel": [[0, 0, 1, -1]]}, {**move, "sel": [[0, 0, 1]]},
-                            {**move, "sel": [[0, 0, 10**20, 1]]},
                             {"type": "cursor", "x": None, "extra": "x" * 300}):
                 await a.send(invalid)
-            for invalid in ([], {}, viewport_ts, cell_ts,
-                            {**hwp_ts, "rects": hwp_ts["rects"] + [[0, 0, 0, 1, 1]]},
-                            {**hwp_ts, "rects": [[True, 0, 0, 1, 1]]},
-                            {**hwp_ts, "rects": [[0, 0, 0, 1, 0]]},
-                            {**hwp_ts, "rects": [[100_000, 0, 0, 1, 1]]},
-                            {**hwp_ts, "rects": [[0, 0, "0", 1, 1]]},
-                            {**text_ts, "text": "가" * 61}, {**text_ts, "text": 5},
-                            {"space": "text", "text": "선택"},
-                            {**range_ts, "range": "B2:D0"}, {**range_ts, "range": "B2:3"},
-                            {**range_ts, "range": f"{'가' * 36}!B2:D5"},
-                            {**range_ts, "range": "[Book.xlsx]Sheet!A1:B2"}):
-                await a.send({"type": "cursor", "ts": invalid})
             await a.send({"type": "ping"})
             await a.wait(lambda m: m["type"] == "pong")
             await b.send({"type": "ping"})
             assert json.loads(await asyncio.wait_for(b.ws.recv(), 10)) == {"type": "pong"}
 
             for i in range(80):
-                await a.send({**drag, "x": i} if i % 2 else {"type": "cursor", "ts": hwp_ts})
+                await a.send({**move, "x": i})
             await a.send({"type": "ping"})
             await a.wait(lambda m: m["type"] == "pong")
             await b.send({"type": "ping"})
@@ -382,8 +347,6 @@ def test_ws_cursor_broadcast_validation_and_rate(http, U):
             await b.send(move)
             assert await a.wait(lambda m: m["type"] == "cursor") == {**move, "uid": "viewer"}
             await b.send({"type": "bye"})
-            assert await a.wait(lambda m: m["type"] == "cursor") == {
-                "type": "cursor", "uid": "viewer", "x": None, "ts": None,
-            }
+            assert await a.wait(lambda m: m["type"] == "cursor") == {"type": "cursor", "uid": "viewer", "x": None}
 
     run(go())

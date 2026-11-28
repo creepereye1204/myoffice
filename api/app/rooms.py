@@ -9,21 +9,11 @@ uvicorn 단일 프로세스 기준 메모리 상태(재시작 시 비워지고 �
 from __future__ import annotations
 
 import asyncio
-import re
 from dataclasses import dataclass, field
 
 from fastapi import WebSocket
 
 LOCK_GRACE = 10.0
-
-# 시트 이름은 일반 이름 또는 작은따옴표로 감싼 이름을 허용한다.
-_A1_CELL = r"\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}"
-_SELECTION_RANGE = re.compile(
-    rf"(?:(?:[\w.]+|'(?:[^'\x00-\x1f\x7f:\[\]\x5c/?*]|'')+')!)?"
-    rf"(?:{_A1_CELL}(?::{_A1_CELL})?|\$?[A-Z]{{1,3}}:\$?[A-Z]{{1,3}}"
-    r"|\$?[1-9][0-9]{0,6}:\$?[1-9][0-9]{0,6})",
-    re.IGNORECASE,
-)
 
 COLORS = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#db2777", "#65a30d"]
 
@@ -92,7 +82,7 @@ class Rooms:
             elif departed:
                 self._remove(fid, r, uid)
         if departed:
-            await self.broadcast(fid, {"type": "cursor", "uid": uid, "x": None, "ts": None}, exclude=uid)
+            await self.broadcast(fid, {"type": "cursor", "uid": uid, "x": None}, exclude=uid)
         if not keep_lock:
             await self.presence(fid)
 
@@ -164,20 +154,11 @@ class Rooms:
 
     async def cursor(self, fid: str, uid: str, msg: dict) -> bool:
         # 포인터는 검증한 좌표만 전달하고 방 상태에는 남기지 않는다.
-        payload = {}
-        if "ts" in msg:
-            try:
-                payload["ts"] = self._text_selection(msg["ts"])
-            except ValueError:
-                return False
-            msg = {k: v for k, v in msg.items() if k in
-                   {"type", "x", "y", "space", "page", "vx", "vy", "d", "dp", "sel"}}
         x = msg.get("x")
         if x is None:
-            if msg.keys() == {"type", "x"}:
-                payload["x"] = None
-            elif msg.keys() != {"type"} or "ts" not in payload:
+            if msg.keys() != {"type", "x"}:
                 return False
+            payload = {"x": None}
         else:
             y, space = msg.get("y"), msg.get("space")
             if space not in ("hwp", "word", "viewport"):
@@ -187,16 +168,12 @@ class Rooms:
                 keys.update(("page", "vx", "vy"))
             elif space == "hwp" and "page" in msg:
                 keys.add("page")
-            if msg.keys() - {"d", "dp", "sel"} != keys:
+            if msg.keys() != keys:
                 return False
             lo, hi = (0, 1) if space == "viewport" else (-1_000_000, 10_000_000)
-            def coords(values, length):
-                return (isinstance(values, (tuple, list)) and len(values) == length
-                        and all(type(v) in (int, float) and lo <= v <= hi for v in values))
-
-            if not coords((x, y), 2):
+            if not all(type(v) in (int, float) and lo <= v <= hi for v in (x, y)):
                 return False
-            payload.update(x=x, y=y, space=space)
+            payload = {"x": x, "y": y, "space": space}
             if "page" in keys:
                 page = msg["page"]
                 if type(page) is not int or not 0 <= page < 100_000:
@@ -207,58 +184,8 @@ class Rooms:
                 if not all(type(v) in (int, float) and 0 <= v <= 1 for v in (vx, vy)):
                     return False
                 payload.update(vx=vx, vy=vy)
-            if "d" in msg:
-                if not coords(msg["d"], 2):
-                    return False
-                payload["d"] = msg["d"]
-            if "dp" in msg:
-                # 시작점은 현재 포인터와 다른 페이지에 있을 수 있다. 한글의 페이지 밖은 null이다.
-                dp = msg["dp"]
-                if ("d" not in msg or space == "viewport"
-                        or not ((dp is None and space == "hwp") or (type(dp) is int and 0 <= dp < 100_000))):
-                    return False
-                payload["dp"] = dp
-            if "sel" in msg:
-                sel = msg["sel"]
-                if (not isinstance(sel, list) or len(sel) > 20
-                        or not all(coords(r, 4) and r[2] > 0 and r[3] > 0 for r in sel)):
-                    return False
-                payload["sel"] = sel
         await self.broadcast(fid, {"type": "cursor", "uid": uid, **payload}, exclude=uid)
         return True
-
-    @staticmethod
-    def _text_selection(ts):
-        if ts is None:
-            return None
-        if not isinstance(ts, dict):
-            raise ValueError
-
-        def index(value, limit):
-            return type(value) is int and 0 <= value < limit
-
-        space = ts.get("space")
-        if space == "text":
-            text, cell_range = ts.get("text"), ts.get("range")
-            if not isinstance(text, str) or len(text) > 60 or "range" not in ts:
-                raise ValueError
-            if cell_range is not None and (not isinstance(cell_range, str) or len(cell_range) > 40
-                                           or not _SELECTION_RANGE.fullmatch(cell_range)):
-                raise ValueError
-            return {"space": space, "text": text, "range": cell_range}
-
-        rects = ts.get("rects")
-        if space != "hwp" or not isinstance(rects, list) or not 0 < len(rects) <= 40:
-            raise ValueError
-        for rect in rects:
-            if not isinstance(rect, list) or len(rect) != 5:
-                raise ValueError
-            page, x, y, w, h = rect
-            if not (index(page, 100_000)
-                    and all(type(v) in (int, float) and -1_000_000 <= v <= 10_000_000 for v in (x, y))
-                    and all(type(v) in (int, float) and 0 < v <= 10_000_000 for v in (w, h))):
-                raise ValueError
-        return {"space": space, "rects": rects}
 
     async def broadcast(self, fid: str, msg: dict, exclude: str | None = None) -> None:
         r = self.rooms.get(fid)

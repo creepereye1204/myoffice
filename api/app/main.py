@@ -1232,8 +1232,7 @@ async def file_socket(sock: WebSocket, fid: str, uid: str = "", name: str = "",
                 await sock.send_json({"type": "pong"})
             elif t == "cursor":
                 now = time.monotonic()
-                # 포인터와 글자·셀 선택은 같은 전송 간격을 적용한다.
-                if now >= next_cursor and len(raw) <= 4096 and await rooms.cursor(fid, uid, msg):
+                if now >= next_cursor and len(raw) <= 256 and await rooms.cursor(fid, uid, msg):
                     next_cursor = now + 0.04
             elif t == "name":
                 await rooms.rename_user(fid, uid, clean_user(uid, msg.get("name"))[1])

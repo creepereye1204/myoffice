@@ -52,54 +52,31 @@ $('#people').addEventListener('click', (e) => { if (e.target.closest('.avatar.me
 // ---------------------------------------------------------------- 마우스 포인터
 const remoteCursors = new Map();
 let cursorFrame = 0, cursorTimer = 0, cursorOnline = false;
-let pendingCursor, pendingRelease, lastCursor, lastCursorTime = -Infinity;
-let pendingTextSelection, lastTextSelection, lastTextSelectionTime = -Infinity;
+let pendingCursor, lastCursor, lastCursorTime = -Infinity;
 
 function flushCursor() {
   cursorTimer = 0;
-  if (!cursorOnline) return;
-  const next = pendingRelease ?? pendingCursor;
-  const pos = document.hidden && next?.x !== null ? undefined : next;
-  if (pendingRelease) pendingRelease = undefined;
-  else pendingCursor = undefined;
-  const payload = { type: 'cursor' };
-  if (pos) {
-    const key = JSON.stringify(pos);
-    if (key !== lastCursor) Object.assign(payload, pos);
-    lastCursor = pos.x === null ? undefined : key;
-  }
-  if (pendingTextSelection !== undefined) {
-    payload.ts = pendingTextSelection;
-    lastTextSelection = JSON.stringify(pendingTextSelection);
-    lastTextSelectionTime = performance.now();
-    pendingTextSelection = undefined;
-  }
-  if ('x' in payload || 'ts' in payload) {
-    room.send(payload);
-    lastCursorTime = performance.now();
-  }
-  if (pendingCursor) scheduleCursor();
+  if (!cursorOnline || !pendingCursor || (document.hidden && pendingCursor.x !== null)) return;
+  const pos = pendingCursor;
+  pendingCursor = undefined;
+  const key = JSON.stringify(pos);
+  if (key === lastCursor) return;
+  room.send({ type: 'cursor', ...pos });
+  lastCursor = pos.x === null ? undefined : key;
+  lastCursorTime = performance.now();
 }
 
-function scheduleCursor() {
+function queueCursor(pos) {
+  if (!cursorOnline || (pos.x === null && !lastCursor && !pendingCursor)) return;
+  pendingCursor = pos;
   if (cursorTimer) return;
   const delay = 50 - (performance.now() - lastCursorTime);
   if (delay <= 0) flushCursor();
   else cursorTimer = setTimeout(flushCursor, Math.ceil(delay));
 }
 
-function queueCursor(pos, release = false) {
-  if (!cursorOnline || (pos.x === null && !lastCursor && !pendingCursor && !pendingRelease)) return;
-  if (release) {
-    pendingRelease = pos;
-    pendingCursor = undefined;
-  } else pendingCursor = pos;
-  scheduleCursor();
-}
-
 function hideCursor() {
-  if (document.hidden) pendingRelease = undefined;
-  if (lastCursor || pendingRelease) queueCursor({ x: null });
+  if (lastCursor) queueCursor({ x: null });
   else pendingCursor = undefined;
 }
 
@@ -138,11 +115,17 @@ function hwpCursorLayout(scroll) {
   return { rect, pages, zoom, left };
 }
 
-function officeSdk(win) {
-  return win.Asc?.editor || win.editor;
+function wordCursorDocument(win) {
+  // 워드: WordControl 의 페이지 변환기가 현재 스크롤, 배율, 눈금자 위치를 반영한다.
+  // 셀은 시트·틀 고정, 슬라이드는 현재 장표에 따라 기준이 달라 viewport 비율을 쓴다.
+  if (file.type !== 'word') return null;
+  const sdk = win.Asc?.editor || win.editor;
+  const drawing = sdk?.WordControl?.m_oDrawingDocument;
+  return typeof drawing?.ConvertCoordsFromCursor2 === 'function' &&
+    typeof drawing.ConvertCoordsToCursor3 === 'function' ? drawing : null;
 }
 
-function cursorPosition(surface, x, y) {
+function cursorPosition(win, surface, x, y) {
   const rect = surface.getBoundingClientRect();
   const width = file.type === 'hwp' ? surface.clientWidth : rect.width;
   const height = file.type === 'hwp' ? surface.clientHeight : rect.height;
@@ -156,159 +139,35 @@ function cursorPosition(surface, x, y) {
     if (!(layout.zoom > 0)) return null;
     return { space: 'hwp', x: (x - layout.left) / layout.zoom, y: (y - rect.top + surface.scrollTop) / layout.zoom };
   }
-  // ONLYOFFICE 공개 API에는 포인터를 페이지 좌표로 바꾸는 함수가 없다.
-  return { space: 'viewport', x: (x - rect.left) / width, y: (y - rect.top) / height };
-}
-
-let cursorSurface, dragStart;
-const cursorDocs = new WeakSet();
-const selectionSdks = new WeakSet();
-const hwpSelectionCache = new WeakMap();
-
-function eventCursorPosition(win, e) {
-  if (document.hidden || !e.isPrimary || !cursorSurface?.surface.isConnected) return null;
-  const { win: target, surface } = cursorSurface;
-  const from = cursorOrigin(win), to = cursorOrigin(target);
-  return cursorPosition(surface, e.clientX + from.x - to.x, e.clientY + from.y - to.y);
-}
-
-function hwpSelectionRects(surface) {
-  const highlights = surface.querySelectorAll('.selection-layer > .selection-highlight:not([style*="display: none"])');
-  if (!highlights.length) return [];
-  const { pages } = hwpCursorLayout(surface);
-  const rects = [];
-  // rhwp가 그린 선택 영역을 각 페이지의 원본 좌표로 되돌린다.
-  for (const el of highlights) {
-    if (el.style.display === 'none') continue;
-    const box = el.getBoundingClientRect();
-    if (!box.width || !box.height) continue;
-    const page = pages.find(({ page, box: p, zoom }) => page !== null && zoom > 0 &&
-      box.left >= p.left - 1 && box.right <= p.right + 1 && box.top >= p.top - 1 && box.bottom <= p.bottom + 1);
-    if (page) {
-      const rect = [page.page, (box.left - page.box.left) / page.zoom, (box.top - page.box.top) / page.zoom,
-        box.width / page.zoom, box.height / page.zoom];
-      hwpSelectionCache.set(el, { style: el.style.cssText, rect });
-      rects.push(rect);
-    } else {
-      // 스크롤로 캔버스가 반환되어도 같은 선택의 페이지 좌표는 유지한다.
-      const cached = hwpSelectionCache.get(el);
-      if (cached?.style === el.style.cssText) rects.push(cached.rect);
-    }
-    if (rects.length === 40) break;
-  }
-  return rects;
-}
-
-function readTextSelection(win, surface) {
-  const sdk = file.type !== 'hwp' && officeSdk(win);
-  if (file.type === 'cell') {
-    const range = sdk?.asc_getActiveRangeStr?.(undefined, false, true);
-    if (typeof range !== 'string') return null;
-    const [start, end] = range.replace(/\$/g, '').split(':');
-    // 행·열 전체 선택은 같은 행·열 이름이 반복되어도 여러 셀을 포함한다.
-    if (!end || (start === end && /^[A-Z]+\d+$/i.test(start))) return null;
-    const index = sdk.asc_getActiveWorksheetIndex?.();
-    const sheet = Number.isInteger(index) && index >= 0 ? sdk.asc_getWorksheetName?.(index) : '';
-    // 범위 길이 제한 안에서 시트 이름을 함께 보낸다.
-    let qualified = range;
-    if (typeof sheet === 'string' && sheet && !/[\u0000-\u001f\u007f:[\]\\/?*]/.test(sheet)) {
-      const name = /^[\p{L}\p{N}_.]+$/u.test(sheet) ? sheet : `'${sheet.replace(/'/g, "''")}'`;
-      qualified = `${name}!${range}`;
-    }
-    return { space: 'text', text: '', range: [...qualified].length <= 40 ? qualified : range };
-  }
-  if (file.type === 'word' || file.type === 'slide') {
-    const selected = sdk?.asc_GetSelectedText?.(true);
-    if (typeof selected !== 'string') return null;
-    const chars = [...selected.replace(/\s+/g, ' ').trim()];
-    const text = chars.length > 40 ? chars.slice(0, 40).join('') + '…' : chars.join('');
-    return text ? { space: 'text', text, range: null } : null;
-  }
-  if (file.type !== 'hwp') return null;
-  const rects = hwpSelectionRects(surface)
-    .filter(([page, x, y, w, h]) => Number.isInteger(page) && page >= 0 &&
-      [x, y, w, h].every(Number.isFinite) && w > 0 && h > 0)
-    .map((r) => r.map((v) => Math.round(v * 1000) / 1000))
-    .filter(([, , , w, h]) => w > 0 && h > 0);
-  return rects.length ? { space: 'hwp', rects } : null;
-}
-
-function updateTextSelection(force = false) {
-  if (!cursorOnline) return;
+  const vx = (x - rect.left) / width, vy = (y - rect.top) / height;
   try {
-    const { win, surface } = cursorSurface || {};
-    const ts = surface?.isConnected ? readTextSelection(win, surface) : null;
-    const key = JSON.stringify(ts);
-    // 선택을 유지하는 동안 만료되기 전에 한 번 더 보낸다.
-    if (key === lastTextSelection && !(ts && (force || performance.now() - lastTextSelectionTime >= 30000))) {
-      pendingTextSelection = undefined;
-      return;
+    const point = wordCursorDocument(win)?.ConvertCoordsFromCursor2(x, y);
+    if (Number.isInteger(point?.DrawPage) && point.DrawPage >= 0 && Number.isFinite(point.X) && Number.isFinite(point.Y)) {
+      return { space: 'word', page: point.DrawPage, x: point.X, y: point.Y, vx, vy };
     }
-    if (!ts && lastTextSelection === undefined) {
-      pendingTextSelection = undefined;
-      return;
-    }
-    pendingTextSelection = ts;
-    scheduleCursor();
-  } catch { /* 문서 전환 중에는 다음 확인까지 마지막 선택을 유지한다 */ }
+  } catch { /* SDK 가 문서 화면을 아직 준비하는 중일 수 있다 */ }
+  // 워드도 SDK 변환을 사용할 수 없는 화면에서는 흐리게 표시한다.
+  return { space: 'viewport', x: vx, y: vy };
 }
 
-function cancelCursorDrag() {
-  dragStart = undefined;
-  hideCursor();
-}
-
+let cursorSurface;
+const cursorDocs = new WeakSet();
 function hookCursorWin(win) {
   const doc = win.document;
   const surface = cursorEditorSurface(win);
-  if (surface) {
-    cursorSurface = { win, surface };
-    const sdk = file.type === 'cell' && officeSdk(win);
-    if (sdk?.asc_registerCallback && !selectionSdks.has(sdk)) {
-      selectionSdks.add(sdk);
-      const sync = () => queueMicrotask(() => {
-        if (cursorSurface?.win === win && surface.isConnected) updateTextSelection();
-      });
-      sdk.asc_registerCallback('asc_onSelectionChanged', sync);
-    }
-  }
+  if (surface) cursorSurface = { win, surface };
   if (cursorDocs.has(doc)) return;
   cursorDocs.add(doc);
-  win.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'mouse' || e.button !== 0 || !e.isPrimary) return;
-    const pos = eventCursorPosition(win, e);
-    dragStart = pos ? { pos, pointerId: e.pointerId, surface: cursorSurface.surface, moved: false } : undefined;
-  }, true);
   win.addEventListener('pointermove', (e) => {
-    if (!e.isPrimary) return;
-    const pos = eventCursorPosition(win, e);
-    if (dragStart?.pointerId === e.pointerId) {
-      if (!(e.buttons & 1) || dragStart.surface !== cursorSurface?.surface) dragStart = undefined;
-      else if (pos && dragStart.pos.space === pos.space) {
-        const start = dragStart.pos;
-        dragStart.moved ||= start.x !== pos.x || start.y !== pos.y || start.page !== pos.page;
-        if (dragStart.moved) {
-          pos.d = [start.x, start.y];
-          if (start.page !== pos.page) pos.dp = start.page ?? null;
-        }
-      }
-    }
-    if (pos) queueCursor(pos);
-    else hideCursor();
+    if (document.hidden || !e.isPrimary || !cursorSurface?.surface.isConnected) return;
+    const { win: target, surface } = cursorSurface;
+    const from = cursorOrigin(win), to = cursorOrigin(target);
+    const pos = cursorPosition(target, surface, e.clientX + from.x - to.x, e.clientY + from.y - to.y);
+    if (pos) queueCursor(pos); else hideCursor();
   }, true);
-  win.addEventListener('pointerup', (e) => {
-    if (!dragStart || dragStart.pointerId !== e.pointerId || e.button !== 0) return;
-    const { moved, surface } = dragStart;
-    dragStart = undefined;
-    if (!moved) return;
-    const pos = eventCursorPosition(win, e);
-    if (!pos || surface !== cursorSurface.surface) return hideCursor();
-    queueCursor(pos, true);
-  }, true);
-  win.addEventListener('pointercancel', cancelCursorDrag, true);
   doc.addEventListener('pointerout', (e) => { if (!e.relatedTarget) hideCursor(); }, true);
-  win.addEventListener('blur', cancelCursorDrag);
-  win.addEventListener('pagehide', cancelCursorDrag);
+  win.addEventListener('blur', hideCursor);
+  win.addEventListener('pagehide', hideCursor);
 }
 
 function startCursors() {
@@ -318,149 +177,49 @@ function startCursors() {
   };
   scan();
   setInterval(scan, 500);
-  let focused = false;
-  setInterval(() => {
-    const surface = cursorSurface?.surface;
-    const hasFocus = surface?.isConnected && surface.ownerDocument.hasFocus();
-    if (file.type === 'hwp' || hasFocus || focused ||
-        (lastTextSelection && lastTextSelection !== 'null' && performance.now() - lastTextSelectionTime >= 30000)) {
-      updateTextSelection();
-    }
-    focused = hasFocus;
-  }, 150);
   $('#stage').addEventListener('pointerleave', hideCursor);
   $('#stage').addEventListener('pointermove', hideCursor);
-  window.addEventListener('pointerup', (e) => {
-    if (dragStart?.pointerId === e.pointerId && e.button === 0) cancelCursorDrag();
-  }, true);
-  window.addEventListener('blur', () => {
-    // 편집기 iframe에 초점이 들어가는 경우에는 브라우저 창에 초점이 남아 있다.
-    setTimeout(() => { if (!document.hasFocus()) cancelCursorDrag(); }, 0);
-  });
-  window.addEventListener('pagehide', cancelCursorDrag);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) cancelCursorDrag(); });
+  window.addEventListener('blur', hideCursor);
+  window.addEventListener('pagehide', hideCursor);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) hideCursor(); });
 }
 
 function removeRemoteCursor(uid) {
-  const entry = remoteCursors.get(uid);
-  entry.el.remove();
-  entry.dragEl.remove();
-  entry.chip?.remove();
-  for (const el of entry.selectionEls) el.remove();
-  for (const el of entry.textEls) el.remove();
+  remoteCursors.get(uid)?.el.remove();
   remoteCursors.delete(uid);
-}
-
-function cursorRect(kind, uid) {
-  const el = document.createElement('div');
-  el.className = kind;
-  el.dataset.uid = uid;
-  el.hidden = true;
-  $('#remote-cursors').appendChild(el);
-  return el;
 }
 
 function receiveCursor(msg) {
   if (msg.uid === me.uid) return;
   const user = presence.users.find((u) => u.uid === msg.uid);
+  if (msg.x === null || !user) return removeRemoteCursor(msg.uid);
   let entry = remoteCursors.get(msg.uid);
-  if (!user || (!entry && msg.x == null && !msg.ts)) return;
   if (!entry) {
-    const el = cursorRect('remote-cursor', msg.uid);
+    const el = document.createElement('div');
+    el.className = 'remote-cursor';
+    el.dataset.uid = msg.uid;
+    el.hidden = true;
     el.innerHTML = '<svg viewBox="0 0 16 19"><path d="M2 1l12 11-6 1-3 5z" fill="currentColor" stroke="white" stroke-linejoin="round"/></svg><span></span>';
-    entry = {
-      el, label: el.querySelector('span'), dragEl: cursorRect('remote-drag', msg.uid),
-      selectionEls: [], textEls: [], msg: { x: null }, expires: 0,
-    };
+    $('#remote-cursors').appendChild(el);
+    entry = { el, label: el.querySelector('span') };
     remoteCursors.set(msg.uid, entry);
   }
-  const now = performance.now();
-  if ('x' in msg) {
-    if (msg.d) entry.drag = { msg, fade: 0 };
-    else if (entry.drag && !entry.drag.fade) {
-      const start = entry.drag.msg;
-      if (msg.space === start.space) {
-        entry.drag.msg = { ...msg, d: start.d, dp: start.dp === undefined ? start.page ?? null : start.dp };
-      }
-      entry.drag.fade = now + 600;
-    }
-    entry.msg = msg;
-    entry.expires = now + 10000;
-  }
-  if (file.type === 'hwp' && msg.sel?.length) {
-    for (const el of entry.selectionEls) el.remove();
-    entry.selectionEls = msg.sel.map(() => cursorRect('remote-selection', msg.uid));
-    entry.selection = { msg, expires: now + 3000 };
-  }
-  if ('ts' in msg) {
-    const space = file.type === 'hwp' ? 'hwp' : 'text';
-    entry.text = msg.ts?.space === space ? { selection: msg.ts, expires: now + 60000 } : undefined;
-    if (!entry.text) clearTextRects(entry);
-  }
-  if (!cursorFrame) drawCursors(now);
-}
-
-function clearTextRects(entry) {
-  for (const el of entry.textEls) el.remove();
-  entry.textEls.length = 0;
-}
-
-function updateSelectionLabel(uid, entry, user) {
-  const ts = entry.text?.selection;
-  const value = ts?.space === 'text' && (ts.range || (ts.text && `‘${ts.text}’`));
-  const caption = value ? `${user.name} · ${value} 선택` : user.name;
-  const { el, label } = entry;
-  el.classList.toggle('has-selection', Boolean(value));
-  if (label.textContent !== caption) label.textContent = caption;
-
-  if (value && el.hidden) {
-    if (!entry.chip?.isConnected) {
-      const avatar = $('#people').querySelector(`.avatar[data-uid="${CSS.escape(uid)}"]`);
-      if (!avatar) return;
-      entry.chip = document.createElement('span');
-      entry.chip.className = 'avatar-selection';
-      avatar.appendChild(entry.chip);
-    }
-    if (entry.chip.textContent !== caption) {
-      entry.chip.textContent = caption;
-      entry.chip.title = caption;
-    }
-  } else {
-    entry.chip?.remove();
-    entry.chip = undefined;
-  }
+  entry.msg = msg;
+  entry.expires = performance.now() + 10000;
+  if (!cursorFrame) drawCursors(performance.now());
 }
 
 function drawCursors(now) {
   cursorFrame = 0;
   for (const [uid, entry] of remoteCursors) {
-    if (entry.drag && (now >= entry.expires || (entry.drag.fade && now >= entry.drag.fade))) {
-      entry.drag = undefined;
-      entry.dragEl.hidden = true;
-    }
-    if (entry.selection && now >= entry.selection.expires) {
-      for (const el of entry.selectionEls) el.remove();
-      entry.selectionEls = [];
-      entry.selection = undefined;
-    }
-    if (entry.text && now >= entry.text.expires) {
-      entry.text = undefined;
-      clearTextRects(entry);
-    }
-    if (now >= entry.expires) entry.msg = { x: null };
     const user = presence.users.find((u) => u.uid === uid);
-    if (!user || (entry.msg.x === null && !entry.drag && !entry.selection && !entry.text)) removeRemoteCursor(uid);
+    if (!user || now >= entry.expires) removeRemoteCursor(uid);
   }
   if (!remoteCursors.size) return;
   // 스크롤·확대 중에는 새 패킷이 없어도 현재 편집기 위치로 다시 그린다.
   cursorFrame = requestAnimationFrame(drawCursors);
   if (!cursorSurface?.surface.isConnected) {
-    for (const [uid, entry] of remoteCursors) {
-      entry.el.hidden = entry.dragEl.hidden = true;
-      for (const highlight of entry.selectionEls) highlight.hidden = true;
-      for (const highlight of entry.textEls) highlight.hidden = true;
-      updateSelectionLabel(uid, entry, presence.users.find((u) => u.uid === uid));
-    }
+    for (const { el } of remoteCursors.values()) el.hidden = true;
     return;
   }
   try {
@@ -468,87 +227,52 @@ function drawCursors(now) {
     const rect = surface.getBoundingClientRect(), origin = cursorOrigin(win);
     const layer = $('#remote-cursors').getBoundingClientRect();
     const hwp = file.type === 'hwp' ? hwpCursorLayout(surface) : null;
+    const word = wordCursorDocument(win);
     const width = hwp ? surface.clientWidth : rect.width;
     const height = hwp ? surface.clientHeight : rect.height;
-    const left = origin.x + rect.left - layer.left, top = origin.y + rect.top - layer.top;
-    const project = (space, pageIndex, x, y) => {
-      if (space === 'viewport') return [x * width, y * height];
-      if (hwp && space === 'hwp') {
-        if (pageIndex == null) return [hwp.left - rect.left + x * hwp.zoom, y * hwp.zoom - surface.scrollTop];
-        const page = hwp.pages.find((p) => p.page === pageIndex && p.zoom > 0);
-        if (page) return [page.box.left - rect.left + x * page.zoom, page.box.top - rect.top + y * page.zoom];
-      }
-      return [];
-    };
-    const drawRect = (el, a, b, color, opacity, minimum = 1) => {
-      const x = Math.max(0, Math.min(a[0], b[0]));
-      const y = Math.max(0, Math.min(a[1], b[1]));
-      const w = Math.min(width, Math.max(a[0], b[0], x + minimum)) - x;
-      const h = Math.min(height, Math.max(a[1], b[1], y + minimum)) - y;
-      el.hidden = !(w > 0 && h > 0) || Math.max(a[0], b[0]) < 0 || Math.max(a[1], b[1]) < 0;
-      if (el.hidden) return;
-      el.style.transform = `translate(${left + x}px, ${top + y}px)`;
-      el.style.width = `${w}px`;
-      el.style.height = `${h}px`;
-      el.style.color = color;
-      el.style.opacity = opacity;
-    };
-    for (const [uid, entry] of remoteCursors) {
-      const { el, msg, drag, dragEl, selection, selectionEls, text, textEls } = entry;
+    for (const [uid, { el, label, msg }] of remoteCursors) {
       const user = presence.users.find((u) => u.uid === uid);
-      if (hwp && drag && !text) {
-        const { msg: d, fade } = drag;
-        const startPage = d.dp === undefined ? d.page : d.dp;
-        drawRect(dragEl, project(d.space, startPage, ...d.d), project(d.space, d.page, d.x, d.y),
-          user.color, (d.space === 'viewport' ? .72 : 1) * (fade ? (fade - now) / 600 : 1));
-      } else dragEl.hidden = true;
-      if (selection) {
-        const { space, page, sel } = selection.msg;
-        sel.forEach(([x, y, w, h], i) => {
-          drawRect(selectionEls[i], project(space, page, x, y), project(space, page, x + w, y + h),
-            user.color, space === 'viewport' ? .72 : 1);
-        });
-      }
-      if (hwp && text) {
-        const { rects } = text.selection;
-        while (textEls.length > rects.length) textEls.pop().remove();
-        rects.forEach(([page, x, y, w, h], i) => {
-          textEls[i] ||= cursorRect('remote-selection', uid);
-          drawRect(textEls[i], project('hwp', page, x, y), project('hwp', page, x + w, y + h), user.color, 1, 0);
-        });
-      }
-      if (msg.x === null) {
-        el.hidden = true;
-        updateSelectionLabel(uid, entry, user);
-        continue;
-      }
-      const approximate = msg.space === 'viewport' || msg.space === 'word';
       let x, y;
+      const approximate = msg.space === 'viewport' || (msg.space === 'word' && !word);
       if (approximate) {
-        [x, y] = project('viewport', null, msg.vx ?? msg.x, msg.vy ?? msg.y);
-      } else {
-        [x, y] = project(msg.space, msg.page, msg.x, msg.y);
-        if (x === undefined && hwp && msg.space === 'hwp' && msg.page !== undefined) {
+        x = (msg.vx ?? msg.x) * width;
+        y = (msg.vy ?? msg.y) * height;
+      } else if (hwp && msg.space === 'hwp') {
+        const page = hwp.pages.find((p) => p.page === msg.page && p.zoom > 0);
+        if (page) {
+          x = page.box.left - rect.left + msg.x * page.zoom;
+          y = page.box.top - rect.top + msg.y * page.zoom;
+        } else if (msg.page !== undefined) {
           const visible = hwp.pages.filter((p) => p.page !== null && p.box.bottom > rect.top && p.box.top < rect.bottom);
           x = width / 2;
           y = visible.length && msg.page < Math.min(...visible.map((p) => p.page)) ? -1 : height + 1;
+        } else {
+          x = hwp.left - rect.left + msg.x * hwp.zoom;
+          y = msg.y * hwp.zoom - surface.scrollTop;
+        }
+      } else if (word && msg.space === 'word') {
+        if (msg.page < word.m_lDrawingFirst || msg.page > word.m_lDrawingEnd) {
+          x = width / 2;
+          y = msg.page < word.m_lDrawingFirst ? -1 : height + 1;
+        } else {
+          const point = word.ConvertCoordsToCursor3(msg.x, msg.y, msg.page, true);
+          if (point && !point.Error) { x = point.X - rect.left; y = point.Y - rect.top; }
         }
       }
       el.hidden = !width || !height || !Number.isFinite(x) || !Number.isFinite(y);
-      updateSelectionLabel(uid, entry, user);
       if (el.hidden) continue;
       const side = hwp && (x < 0 || x >= width);
-      const atTop = y < 0 || (side && y < height / 2);
-      const atBottom = y >= height || (side && y >= height / 2);
+      const top = y < 0 || (side && y < height / 2);
+      const bottom = y >= height || (side && y >= height / 2);
       el.classList.toggle('approx', approximate);
-      el.classList.toggle('edge-top', atTop);
-      el.classList.toggle('edge-bottom', atBottom);
-      x = Math.max(0, Math.min(width - (atTop || atBottom ? 17 : 1), x)) + left;
-      y = (atTop ? 0 : atBottom ? Math.max(0, height - 19) : y) + top;
-      const labelWidth = el.classList.contains('has-selection') ? Math.min(275, layer.width / 2) : 115;
-      el.classList.toggle('left-label', x > layer.width - labelWidth);
+      el.classList.toggle('edge-top', top);
+      el.classList.toggle('edge-bottom', bottom);
+      x = Math.max(0, Math.min(width - (top || bottom ? 17 : 1), x)) + origin.x + rect.left - layer.left;
+      y = (top ? 0 : bottom ? Math.max(0, height - 19) : y) + origin.y + rect.top - layer.top;
+      el.classList.toggle('left-label', x > layer.width - 115);
       el.style.transform = `translate(${x}px, ${y}px)`;
       el.style.setProperty('--cursor-color', user.color);
+      if (label.textContent !== user.name) label.textContent = user.name;
     }
   } catch { /* 프레임 이동 중이면 다음 화면에서 다시 그린다 */ }
 }
@@ -901,10 +625,7 @@ async function main() {
       const before = presence.users.length;
       presence = m; renderPeople();
       for (const uid of remoteCursors.keys()) if (!m.users.some((u) => u.uid === uid)) removeRemoteCursor(uid);
-      if (before && m.users.length > before) {
-        toast(`${m.users[m.users.length - 1].name}님이 들어왔습니다`);
-        updateTextSelection(true);
-      }
+      if (before && m.users.length > before) toast(`${m.users[m.users.length - 1].name}님이 들어왔습니다`);
       if (file.type === 'hwp' && m.lock === me.uid && m.requests?.length) {
         const who = m.users.find((u) => u.uid === m.requests[0]);
         banner(`${who?.name || '다른 사람'}님이 편집을 요청했습니다.`, '저장하고 넘기기', async () => {
@@ -926,8 +647,7 @@ async function main() {
     if (!on) {
       clearTimeout(cursorTimer);
       cursorTimer = 0;
-      pendingCursor = pendingRelease = lastCursor = dragStart = undefined;
-      pendingTextSelection = lastTextSelection = undefined;
+      pendingCursor = lastCursor = undefined;
       for (const uid of remoteCursors.keys()) removeRemoteCursor(uid);
     }
     clearTimeout(connTimer);
